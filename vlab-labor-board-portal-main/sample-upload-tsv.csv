@@ -1,0 +1,4 @@
+Employee ID	User ID	Employee Name	Badge Barcode ID	Department ID	Employment Start Date	Employment Type	Employee Status	Manager Name	Management Area ID	Shift Pattern
+110888249	qruchikr	Ruchika,Ruchika	13966332	1299020	Wed Sep 22 00:00:00 UTC 2021	AMZN	Active	Bhatt,Devashish	5	DA
+110888250	jdoe123	John,Doe	13966333	1299070	Mon Jan 15 00:00:00 UTC 2024	AMZN	Active	Smith,Jane	22	DB
+110888251	ssmith99	Sarah,Smith	13966334	1299080	Fri Mar 08 00:00:00 UTC 2024	AMZN	Active	Wilson,Mike	24	NA
