@@ -71,18 +71,18 @@
                     title="Upload CSV file with employee roster data">
               <span class="ml-2 file-label" id="label-roster"></span>
             </label>
-            <label for="logins" class="pill-label" style="background: #e0f2fe; border-color: #0284c7;">Daily Logins (Optional)
-              <input type="file" id="logins" name="logins" accept=".csv" class="hidden"
-                    title="Upload CSV file with daily login data to filter present associates">
-              <span class="ml-2 file-label" id="label-logins"></span>
+            <label for="adjustments" class="pill-label" style="background:#fef9c3; border-color:#ca8a04;">Adjustments (Optional)
+              <input type="file" id="adjustments" name="adjustments" accept=".csv" class="hidden"
+                    title="Upload CSV with SWAPIN/SWAPOUT/VET/VTO actions (User ID, Action, Date)">
+              <span class="ml-2 file-label" id="label-adjustments"></span>
             </label>
           </div>
           <div class="text-xs text-gray-600 mt-1">
             <button type="button" id="downloadTemplateBtn" class="text-blue-600 hover:text-blue-800 underline"
                     title="Download CSV template for roster data">📄 Download Roster Template</button>
             <span class="mx-2">•</span>
-            <button type="button" id="downloadLoginTemplateBtn" class="text-blue-600 hover:text-blue-800 underline"
-                    title="Download CSV template for login data">📄 Download Login Template</button>
+            <button type="button" id="downloadAdjustmentTemplateBtn" class="text-yellow-600 hover:text-yellow-800 underline"
+                    title="Download CSV template for adjustment actions">📄 Adjustment Template</button>
           </div>
         </div>
         <!-- Roster Database Management -->
@@ -136,26 +136,7 @@
             <label for="plannedVolumeRoster" class="block font-semibold mb-1 text-sm">Planned Volume</label>
             <div class="flex items-start gap-4">
               <input id="plannedVolumeRoster" placeholder="e.g., 52000" class="border rounded p-2 w-36" type="number" min="0" title="Planned volume">
-              <!-- Inline Smart Assignment Tools -->
-              <div id="smartAssignmentToolsInline" class="smart-assignment-tools-inline w-80">
-                <h4 class="smart-tools-title-inline">Smart Assignment</h4>
-                <div class="flex flex-col gap-2 mb-1">
-                  <button id="autoAssignBtn" class="smart-inline-btn auto">🤖 Auto-Assign All</button>
-                  <div class="flex gap-2">
-                    <button id="selectByShiftBtn" class="smart-inline-mini">By Shift</button>
-                    <button id="selectByDeptBtn" class="smart-inline-mini">By Dept</button>
-                    <button id="selectFirstNBtn" class="smart-inline-mini">First N</button>
-                  </div>
-                  <div class="grid grid-cols-3 gap-2 items-center">
-                    <input type="number" id="rapidCount" class="smart-inline-input" placeholder="Count" min="1">
-                    <select id="rapidTarget" class="smart-inline-select">
-                      <option value="">To process...</option>
-                    </select>
-                    <button id="rapidAssignBtn" class="smart-inline-mini warn">Assign</button>
-                  </div>
-                  <button id="fillCapacityBtn" class="smart-inline-btn fill">📊 Fill All to Capacity</button>
-                </div>
-              </div>
+              <!-- Smart Assignment controls removed per request -->
             </div>
           </div>
         </div>
@@ -195,6 +176,8 @@
 
           <div class="lg:col-span-2 bg-gray-50 rounded border p-3">
             <h3 class="text-sm font-bold mb-2">Roster Overview</h3>
+            <!-- New: Adjustments & Logins summary chips shown beside overview -->
+            <div id="rosterAdjSummary" class="flex flex-wrap gap-2 text-xs mb-2"></div>
             <div id="rosterOverviewContent" class="text-sm text-gray-800"></div>
           </div>
         </div>
@@ -380,7 +363,6 @@
           <button class="analytics-tab" data-tab="performance" role="tab" aria-selected="false">Performance</button>
           <button class="analytics-tab" data-tab="assignments" role="tab" aria-selected="false">Assignments</button>
           <button class="analytics-tab" data-tab="rotation" role="tab" aria-selected="false">Rotation</button>
-          <button class="analytics-tab" data-tab="insights" role="tab" aria-selected="false">Insights</button>
           <div style="flex:1"></div>
           <input id="analyticsSearchInput" class="analytics-search-input" type="text" placeholder="Search associate..." aria-label="Search analytics" style="max-width:220px; margin:8px"/>
           <button id="exportAnalyticsBtn" class="border border-gray-300 rounded px-2 py-1 text-xs text-gray-700 bg-white hover:bg-gray-50" title="Export analytics CSV">Export CSV</button>
@@ -411,38 +393,83 @@
 
         <!-- Performance Tab -->
         <div id="tab-performance" class="analytics-tab-content hidden">
+          <!-- Filters row -->
+          <div class="flex flex-wrap items-center gap-3 mb-3">
+            <div class="text-sm font-medium">Filters:</div>
+            <div class="flex items-center gap-1">
+              <label for="performanceShiftFilter" class="text-xs text-gray-600">Shift</label>
+              <select id="performanceShiftFilter" class="border rounded px-2 py-1 text-sm">
+                <option value="auto">Auto</option>
+                <option value="day">Day</option>
+                <option value="night">Night</option>
+              </select>
+            </div>
+            <div class="flex items-center gap-1">
+              <label for="performanceProcessFilter" class="text-xs text-gray-600">Process</label>
+              <select id="performanceProcessFilter" class="border rounded px-2 py-1 text-sm">
+                <option value="all">All</option>
+                <option value="PICK">Pick</option>
+                <option value="SORT">Sort</option>
+                <option value="DOCK">Dock</option>
+              </select>
+            </div>
+            <div class="flex items-center gap-1">
+              <label for="performanceDateFilter" class="text-xs text-gray-600">Date</label>
+              <input id="performanceDateFilter" type="date" class="border rounded px-2 py-1 text-sm" />
+            </div>
+          </div>
           <div class="analytics-grid">
+            <div class="analytics-card">
+              <h3>Planned vs Actual Headcount</h3>
+              <div id="perfPlannedActual" class="analytics-content"></div>
+            </div>
+            <div class="analytics-card">
+              <h3>Attendance Rate</h3>
+              <div id="perfAttendance" class="analytics-content"></div>
+            </div>
+            <div class="analytics-card">
+              <h3>VET / VTO Participation</h3>
+              <div id="perfVetVto" class="analytics-content"></div>
+            </div>
             <div class="analytics-card full-width">
-              <h3>Performance Rankings</h3>
-              <div id="performanceRankings" class="analytics-content"></div>
-            </div>
-            <div class="analytics-card">
-              <h3>Top Performers</h3>
-              <div id="topPerformers" class="analytics-content"></div>
-            </div>
-            <div class="analytics-card">
-              <h3>Skill Development</h3>
-              <div id="skillDevelopment" class="analytics-content"></div>
+              <h3>Process-level Performance</h3>
+              <div id="perfProcessPerformance" class="analytics-content"></div>
             </div>
           </div>
         </div>
 
         <!-- Assignments Tab -->
         <div id="tab-assignments" class="analytics-tab-content hidden">
-          <div class="flex items-center gap-2 mb-3">
+          <div class="flex items-center gap-3 mb-3">
             <label for="quarterFilter" class="text-sm font-medium">Quarter:</label>
             <select id="quarterFilter" class="border rounded px-2 py-1 text-sm">
               <option value="all">All</option>
               <option value="Q1">Q1</option>
               <option value="Q2">Q2</option>
               <option value="Q3">Q3</option>
-              <option value="Q4">Q4</option>
             </select>
+            <div class="ml-auto flex items-center gap-2">
+              <input id="assignmentsSearch" type="text" placeholder="Filter assignment log..." class="border rounded px-2 py-1 text-sm" style="min-width:220px"/>
+            </div>
           </div>
           <div class="analytics-grid">
             <div class="analytics-card full-width">
-              <h3>Assignment History</h3>
-              <div id="assignmentHistory" class="analytics-content"></div>
+              <h3>Assignment Log</h3>
+              <div class="overflow-auto">
+                <table class="min-w-full text-sm" id="assignmentsTable">
+                  <thead class="bg-gray-100 text-xs uppercase tracking-wider">
+                    <tr>
+                      <th class="px-3 py-2 text-left">Associate ID</th>
+                      <th class="px-3 py-2 text-left">Associate Name</th>
+                      <th class="px-3 py-2 text-left">Process Path</th>
+                      <th class="px-3 py-2 text-left">Action</th>
+                      <th class="px-3 py-2 text-left">Timestamp</th>
+                      <th class="px-3 py-2 text-left">Quarter</th>
+                    </tr>
+                  </thead>
+                  <tbody id="assignmentsTableBody"></tbody>
+                </table>
+              </div>
             </div>
             <div class="analytics-card">
               <h3>Patterns</h3>
@@ -457,39 +484,26 @@
 
         <!-- Rotation Tab -->
         <div id="tab-rotation" class="analytics-tab-content hidden">
+          <div class="flex items-center gap-3 mb-3">
+            <label for="rotationQuarterToggle" class="text-sm font-medium">Quarter:</label>
+            <select id="rotationQuarterToggle" class="border rounded px-2 py-1 text-sm">
+              <option value="Q1">Q1</option>
+              <option value="Q2">Q2</option>
+              <option value="Q3">Q3</option>
+            </select>
+          </div>
           <div class="analytics-grid">
-            <div class="analytics-card">
-              <h3>Smart Assignment Queue</h3>
-              <div id="smartAssignmentQueue" class="analytics-content"></div>
+            <div class="analytics-card full-width">
+              <h3>Rotation Summary</h3>
+              <div id="rotationSummary" class="analytics-content"></div>
             </div>
             <div class="analytics-card">
-              <h3>Rotation Alerts</h3>
-              <div id="rotationAlertsPanel" class="analytics-content"></div>
-            </div>
-            <div class="analytics-card">
-              <h3>Fairness Metrics</h3>
-              <div id="rotationFairnessMetrics" class="analytics-content"></div>
+              <h3>Fairness Index</h3>
+              <div id="rotationFairnessIndex" class="analytics-content"></div>
             </div>
           </div>
         </div>
-
-        <!-- Insights Tab -->
-        <div id="tab-insights" class="analytics-tab-content hidden">
-          <div class="analytics-grid">
-            <div class="analytics-card">
-              <h3>Workforce Insights</h3>
-              <div id="workforceInsights" class="analytics-content"></div>
-            </div>
-            <div class="analytics-card">
-              <h3>Training Opportunities</h3>
-              <div id="trainingOpportunities" class="analytics-content"></div>
-            </div>
-            <div class="analytics-card">
-              <h3>Productivity Trends</h3>
-              <div id="productivityTrends" class="analytics-content"></div>
-            </div>
-          </div>
-        </div>
+        
       </div>
     </section>
   </main>
@@ -669,7 +683,7 @@
 
   <script>
     // Show file names
-    ['roster','missing','logins'].forEach(function(id) {
+    ['roster','missing','logins','adjustments'].forEach(function(id) {
       const input = document.getElementById(id);
       const label = document.getElementById('label-'+id);
       if (!input) return;

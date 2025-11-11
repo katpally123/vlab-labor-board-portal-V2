@@ -37,8 +37,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (site === 'YHM2' && empSiteRaw !== 'YHM2') return;
       if ((site === 'YDD2' || site === 'YDD4') && !isYddClusterSite) return;
       const sc = shiftCodeOf(emp.scode);
-      if (!allowedSet.has(sc)) return; // weekday allowed
-      if (!daySet.has(sc)) return; // shift set allowed
+      const forced = !!(emp._forceInclude || emp._isUploaded); // allow force-included to bypass code gating
+      if (!forced && !allowedSet.has(sc)) return; // weekday allowed
+      if (!forced && !daySet.has(sc)) return; // shift set allowed
       if (String(emp.status || '').toLowerCase() !== 'active') return;
       if (SHIFT_CODE_FILTER && sc !== SHIFT_CODE_FILTER) return; // apply user shift code filter
       rows.push(emp);
@@ -60,8 +61,9 @@ document.addEventListener('DOMContentLoaded', () => {
     employees.forEach(emp => {
       const empSiteRaw = (emp.site || emp.Site || '').toString().trim().toUpperCase();
       const sc = shiftCodeOf(emp.scode);
-      if (!allowedSet.has(sc)) return;
-      if (!daySet.has(sc)) return;
+      const forced = !!(emp._forceInclude || emp._isUploaded);
+      if (!forced && !allowedSet.has(sc)) return;
+      if (!forced && !daySet.has(sc)) return;
       if (String(emp.status||'').toLowerCase() !== 'active') return;
       if (empSiteRaw === 'YHM2') multi.YHM2 += 1; else if (/^(YDD2|YDD4|YDD_SHARED|YDD)/.test(empSiteRaw)) multi.YDD_CLUSTER += 1;
     });
@@ -114,6 +116,27 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch(e){ console.warn('[HEADCOUNT->BOARD] propagation failed', e); }
       }
     }
+    // Adjustments & Logins summary beside overview
+    try {
+      const adjTarget = document.getElementById('rosterAdjSummary');
+      if (adjTarget) {
+        const adj = (window.VLAB_ADJUST_STATS || { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0 });
+        const regHC = typeof window.VLAB_REGULAR_HC === 'number' ? window.VLAB_REGULAR_HC : ((window.__ROSTER_INCLUDED || []).length || 0);
+        const uploaded = typeof window.VLAB_UPLOADED_LOGINS === 'number' ? window.VLAB_UPLOADED_LOGINS : 0;
+        const showUploaded = !!document.getElementById('logins');
+        const uploadedHtml = showUploaded ? `<span class="ro-pill" title="Uploaded daily logins count">Uploaded Logins: <strong>${uploaded}</strong></span>` : '';
+        const net = (regHC + (adj.SWAPIN||0) + (adj.VET||0) - (adj.SWAPOUT||0) - (adj.VTO||0));
+        adjTarget.innerHTML = `
+          <span class="ro-pill" title="Headcount before adjustments">Regular HC: <strong>${regHC}</strong></span>
+          <span class="ro-pill" title="Added via SWAPIN">Swap In: <strong>${adj.SWAPIN||0}</strong></span>
+          <span class="ro-pill" title="Removed via SWAPOUT">Swap Out: <strong>${adj.SWAPOUT||0}</strong></span>
+          <span class="ro-pill" title="Voluntary Extra Time">VET: <strong>${adj.VET||0}</strong></span>
+          <span class="ro-pill" title="Voluntary Time Off">VTO: <strong>${adj.VTO||0}</strong></span>
+          <span class="ro-pill" title="Regular HC adjusted by adjustments">Adjusted HC: <strong>${net}</strong></span>
+          ${uploadedHtml}
+        `;
+      }
+    } catch(err){ console.warn('[ADJ-SUMMARY] render failed', err); }
     // Ancillary panels (always refresh even if empty to clear stale state)
     renderShiftCodeBreakdown(window.__ROSTER_INCLUDED || []);
     renderIncludedAssociates(window.__ROSTER_INCLUDED || []);
@@ -231,11 +254,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // Check if required elements exist
   if (!form) {
     console.error('[DEBUG] Roster form element not found!');
-    return;
+    // Do not return; allow Analytics and other features to initialize without roster form
   }
   if (!output) {
     console.error('[DEBUG] Output element not found!');
-    return;
+    // Do not return; allow Analytics and other features to initialize without output panel
   }
   
   console.log('[DEBUG] Form and output elements found successfully');
@@ -782,8 +805,8 @@ document.addEventListener('DOMContentLoaded', () => {
       patterns: {} // Assignment pattern analysis
     },
     currentQuarter: 'Q1',
-    quarterAssignments: { Q1: {}, Q2: {}, Q3: {} },
-    quarterLocks: { Q1: false, Q2: false, Q3: false },
+    quarterAssignments: { Q1: {}, Q2: {}, Q3: {}, Q4: {} },
+    quarterLocks: { Q1: false, Q2: false, Q3: false, Q4: false },
     // Multi-site support
     currentSite: 'YDD2', // Active site being viewed
     suppressAnalytics: false, // Flag to prevent analytics during internal operations
@@ -3359,6 +3382,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     
     console.log(`[AUTO-LOAD] 🎫 Created badges for FILTERED employees only: ${Object.keys(STATE.badges).length}`);
+    // Initialize overview chip stats for auto-load path
+    try {
+      window.VLAB_REGULAR_HC = Object.keys(STATE.badges).length;
+      window.VLAB_UPLOADED_LOGINS = 0;
+      window.VLAB_ADJUST_STATS = window.VLAB_ADJUST_STATS || { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0 };
+    } catch(_) {}
     
     // STEP 5: Attempt to restore previous assignments from last snapshot
     try {
@@ -3843,27 +3872,10 @@ document.addEventListener('DOMContentLoaded', () => {
     
     setupEventListeners() {
       // Auto assignment
+      // Smart assignment UI removed from roster; guard for future reintroduction on Site Board.
       const autoAssignBtn = document.getElementById('autoAssignBtn');
       if (autoAssignBtn) autoAssignBtn.addEventListener('click', this.autoAssignAll.bind(this));
-      
-      // Quick selection tools
-      const selectByShiftBtn = document.getElementById('selectByShiftBtn');
-      const selectByDeptBtn = document.getElementById('selectByDeptBtn');
-      const selectFirstNBtn = document.getElementById('selectFirstNBtn');
-      
-      if (selectByShiftBtn) selectByShiftBtn.addEventListener('click', this.selectByShift.bind(this));
-      if (selectByDeptBtn) selectByDeptBtn.addEventListener('click', this.selectByDepartment.bind(this));
-      if (selectFirstNBtn) selectFirstNBtn.addEventListener('click', this.selectFirstN.bind(this));
-      
-      // Rapid assignment
-      const rapidAssignBtn = document.getElementById('rapidAssignBtn');
-      if (rapidAssignBtn) rapidAssignBtn.addEventListener('click', this.rapidAssign.bind(this));
-      
-      // Fill to capacity
-      const fillCapacityBtn = document.getElementById('fillCapacityBtn');
-      if (fillCapacityBtn) fillCapacityBtn.addEventListener('click', this.fillAllToCapacity.bind(this));
-      
-      // Populate rapid assignment targets
+      // Other buttons are intentionally absent; no-op if missing.
       this.populateRapidTargets();
     }
     
@@ -4181,14 +4193,19 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   
   // Initialize smart assignment manager
-  const SMART = new SmartAssignmentManager();
-  window.SMART = SMART;
+  // Initialize smart assignment manager only if any related control exists
+  if (document.getElementById('autoAssignBtn')) {
+    const SMART = new SmartAssignmentManager();
+    window.SMART = SMART;
+  } else {
+    console.info('[SMART] Smart assignment controls not present; skipped initialization.');
+  }
 
   // ====== ROSTER DATABASE SYSTEM ======
   
   class RosterDatabase {
     constructor() {
-      this.database = new Map(); // Employee ID -> Employee Object
+      this.database = new Map(); // Primary key: User ID (fallback to EID if missing)
       this.loadDatabase();
       this.setupEventListeners();
       this.updateStatus();
@@ -4200,11 +4217,13 @@ document.addEventListener('DOMContentLoaded', () => {
       const clearDatabaseBtn = document.getElementById('clearDatabaseBtn');
       const loadFromDatabaseBtn = document.getElementById('loadFromDatabaseBtn');
       const downloadLoginTemplateBtn = document.getElementById('downloadLoginTemplateBtn');
+  const downloadAdjustmentTemplateBtn = document.getElementById('downloadAdjustmentTemplateBtn');
       
       if (viewDatabaseBtn) viewDatabaseBtn.addEventListener('click', this.viewDatabase.bind(this));
       if (clearDatabaseBtn) clearDatabaseBtn.addEventListener('click', this.clearDatabase.bind(this));
       if (loadFromDatabaseBtn) loadFromDatabaseBtn.addEventListener('click', this.loadFromDatabase.bind(this));
       if (downloadLoginTemplateBtn) downloadLoginTemplateBtn.addEventListener('click', this.downloadLoginTemplate.bind(this));
+  if (downloadAdjustmentTemplateBtn) downloadAdjustmentTemplateBtn.addEventListener('click', this.downloadAdjustmentTemplate.bind(this));
       
       // File input for logins
       const loginInput = document.getElementById('logins');
@@ -4220,6 +4239,23 @@ document.addEventListener('DOMContentLoaded', () => {
         if (saved) {
           const data = JSON.parse(saved);
           this.database = new Map(Object.entries(data.employees || {}));
+          // Migration: reindex to User ID if values have userId field
+          try {
+            let migrated = 0;
+            const reindexed = new Map();
+            for (const [k, v] of this.database.entries()){
+              const userId = (v.userId || v.handle || v['User ID'] || '').toString();
+              const eid = (v.eid || v.id || '').toString();
+              const key = userId || eid || k;
+              if (key !== k) migrated++;
+              reindexed.set(key, { ...v, id: key, userId: userId || v.userId || '', eid: eid || v.eid || '' });
+            }
+            if (migrated){
+              console.info(`[DATABASE] Migrated ${migrated} keys to User ID primary key`);
+              this.database = reindexed;
+              this.saveDatabase();
+            }
+          } catch(e){ console.warn('[DATABASE] migration skipped', e); }
           console.log('[DATABASE] Loaded', this.database.size, 'employees from database');
         }
       } catch (error) {
@@ -4261,23 +4297,34 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Add or update employee in database
     addEmployee(employee) {
-      const key = employee.eid || employee.id;
-      if (key) {
-        this.database.set(key.toString(), {
-          id: key,
-          eid: key,
-          name: employee.name,
-          scode: employee.scode,
-          site: employee.site,
-          status: employee.status || 'Active',
-          addedDate: employee.addedDate || new Date().toISOString()
-        });
-      }
+      const userId = (employee.userId || employee.handle || employee['User ID'] || '').toString();
+      const eid = (employee.eid || employee.id || employee['Employee ID'] || '').toString();
+      const key = (userId || eid);
+      if (!key) return;
+      this.database.set(key, {
+        id: key,
+        userId: userId,
+        eid: eid,
+        name: employee.name,
+        scode: employee.scode,
+        site: employee.site,
+        status: employee.status || 'Active',
+        addedDate: employee.addedDate || new Date().toISOString()
+      });
     }
     
     // Get employee from database
-    getEmployee(employeeId) {
-      return this.database.get(employeeId.toString());
+    getEmployee(idLike) {
+      if (!idLike) return undefined;
+      const key = idLike.toString();
+      // First, try direct key lookup (User ID primary)
+      let found = this.database.get(key);
+      if (found) return found;
+      // Fallback: search by EID for backward compatibility
+      for (const v of this.database.values()){
+        if (v && (v.eid || '').toString() === key) return v;
+      }
+      return undefined;
     }
     
     // Get all employees
@@ -4301,7 +4348,7 @@ document.addEventListener('DOMContentLoaded', () => {
       
       // Add all current associates to database
       Object.values(STATE.badges).forEach(badge => {
-        const existing = this.getEmployee(badge.eid);
+        const existing = this.getEmployee(badge.handle || badge.eid);
         if (existing) {
           // Update existing employee
           existing.name = badge.name;
@@ -4313,6 +4360,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
           // Add new employee
           this.addEmployee({
+            userId: badge.handle,
             eid: badge.eid,
             name: badge.name,
             scode: badge.scode,
@@ -4710,6 +4758,24 @@ document.addEventListener('DOMContentLoaded', () => {
       a.download = 'login-template.csv';
       a.click();
       URL.revokeObjectURL(url);
+    }
+
+    // Download adjustments template
+    downloadAdjustmentTemplate() {
+      const csvContent = [
+        'User ID,Action,Date',
+        'qruchikr,SWAPIN,2025-11-11',
+        'ipanidhi,VET,2025-11-11',
+        'sgrupind,SWAPOUT,2025-11-11',
+        'manachha,VTO,2025-11-11'
+      ].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'adjustments_template.csv';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      TOAST.show('📥 Adjustments template downloaded','info');
     }
     
     // Helper to read file as text
@@ -6236,6 +6302,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // File input handling to update labels
   const rosterInput = document.getElementById('roster');
   const loginsInput = document.getElementById('logins');
+  const adjustmentsInput = document.getElementById('adjustments');
   
   if (rosterInput) {
     rosterInput.addEventListener('change', (e) => {
@@ -6261,6 +6328,52 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
           label.textContent = '';
         }
+      }
+    });
+  }
+
+  if (adjustmentsInput) {
+    adjustmentsInput.addEventListener('change', async (e) => {
+      const label = document.getElementById('label-adjustments');
+      const file = e.target.files && e.target.files[0];
+      if (!label) return;
+      if (!file){ label.textContent=''; return; }
+      label.textContent = file.name; label.style.color = '#a16207';
+      // Live preview: parse the CSV immediately to show +adds/-removals for the selected date
+      try {
+        const rows = await parseCsv(file);
+        const todayKey = (document.getElementById('date')?.value || document.getElementById('date_roster')?.value || '').trim();
+        const stats = { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0 };
+        rows.forEach(r => {
+          const action = String(r.Action || r.Type || '').toUpperCase().trim();
+          const d = String(r.Date || r.date || '').trim();
+          if (todayKey && d && d !== todayKey) return; // only for selected date in preview
+          if (action === 'SWAPIN' || action === 'VET') stats[action]++;
+          else if (action === 'SWAPOUT' || action === 'VTO') stats[action]++;
+        });
+        const plus = (stats.SWAPIN||0) + (stats.VET||0);
+        const minus = (stats.SWAPOUT||0) + (stats.VTO||0);
+        window.VLAB_ADJUST_PREVIEW = stats;
+        label.textContent = `${file.name} (+${plus}/-${minus}${todayKey?` for ${todayKey}`:''})`;
+        if (plus===0 && minus===0 && Array.isArray(rows) && rows.length>0){
+          const msg = `Adjustments file parsed (${rows.length} rows) but none match the selected Date. They will apply only for ${todayKey}.`;
+          try{ TOAST.info(msg); }catch(_){ console.info('[ADJUST-PREVIEW]', msg); }
+        }
+
+        // Auto-build: trigger the same flow as clicking Build Schedule Board
+        // Use a small timeout to let label UI update first
+        setTimeout(() => {
+          try {
+            const form = document.getElementById('rosterForm') || document.getElementById('laborForm');
+            if (!form) return;
+            // Give user feedback
+            try { TOAST.show('Building with adjustments…', 'info'); } catch(_) {}
+            const evt = new Event('submit', { bubbles: true, cancelable: true });
+            form.dispatchEvent(evt);
+          } catch(err){ console.warn('[AUTO-BUILD] Failed to trigger build from adjustments upload:', err); }
+        }, 100);
+      } catch(err){
+        console.warn('[ADJUST-PREVIEW] Failed to parse adjustments for preview:', err);
       }
     });
   }
@@ -6291,13 +6404,13 @@ document.addEventListener('DOMContentLoaded', () => {
     
     console.log('[DEBUG] Form submission started');
     console.log('[DEBUG] Form element:', form);
-    console.log('[DEBUG] Form files - roster:', form.roster?.files, 'logins:', form.logins?.files);
+  console.log('[DEBUG] Form files - roster:', form.roster?.files, 'logins:', form.logins?.files, 'adjustments:', form.adjustments?.files);
     
     // Store current form state to preserve after processing
     // Controls (date/site/shift/quarter/planned volume) were relocated outside the form, so access them via document
-    const resolvedDate = document.getElementById('date')?.value || document.getElementById('date_roster')?.value || '';
-    const resolvedSite = document.getElementById('site')?.value || document.getElementById('site_roster')?.value || '';
-    const resolvedShift = document.querySelector('input[name="shift"]:checked')?.value || document.querySelector('input[name="shift_roster"]:checked')?.value || '';
+  const resolvedDate = document.getElementById('date')?.value || document.getElementById('date_roster')?.value || '';
+  const resolvedSite = document.getElementById('site')?.value || document.getElementById('site_roster')?.value || '';
+  const resolvedShift = document.querySelector('input[name="shift"]:checked')?.value || document.querySelector('input[name="shift_roster"]:checked')?.value || '';
     const resolvedQuarter = document.getElementById('quarter')?.value || '';
     const resolvedPlannedVolume = document.getElementById('plannedVolumeStub')?.value || document.getElementById('plannedVolumeRoster')?.value || '';
     const currentFormState = {
@@ -6307,7 +6420,8 @@ document.addEventListener('DOMContentLoaded', () => {
       quarter: resolvedQuarter,
       plannedVolume: resolvedPlannedVolume,
       rosterFileName: form.roster.files[0]?.name,
-      loginsFileName: form.logins.files[0]?.name
+  loginsFileName: form.logins.files[0]?.name,
+  adjustmentsFileName: form.adjustments?.files[0]?.name
     };
     console.log('[DEBUG] Preserving form state:', currentFormState);
     
@@ -6315,11 +6429,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const rosterFile = form.roster?.files[0];
   const loginsFile = form.logins?.files[0] || null;
+  const adjustmentsFile = form.adjustments?.files[0] || null;
     
-    // Require at least roster file to proceed
-    if (!rosterFile){ 
-      output.textContent = 'Please select a Roster File to proceed.'; 
-      console.warn('[DEBUG] No roster file selected');
+    // Require at least one source to proceed: roster OR adjustments
+    // Previously we hard-required a roster file which prevented adjustments-only builds.
+    // Now we allow building from adjustments alone (we'll synthesize rows for SWAPIN/VET).
+    if (!rosterFile && !adjustmentsFile){ 
+      output.textContent = 'Please select a Roster File or an Adjustments CSV to proceed.'; 
+      console.warn('[DEBUG] No roster or adjustments file selected');
       // Clear form processing flag
       isFormProcessing = false;
       return; 
@@ -6327,7 +6444,8 @@ document.addEventListener('DOMContentLoaded', () => {
     
     console.log('[DEBUG] Roster file selected:', rosterFile.name, 'size:', rosterFile.size);
     
-    console.log('[DEBUG] Daily logins file:', loginsFile ? `${loginsFile.name} (${loginsFile.size} bytes)` : 'None selected');
+  console.log('[DEBUG] Daily logins file:', loginsFile ? `${loginsFile.name} (${loginsFile.size} bytes)` : 'None selected');
+  console.log('[DEBUG] Adjustments file:', adjustmentsFile ? `${adjustmentsFile.name} (${adjustmentsFile.size} bytes)` : 'None selected');
 
     // Check if Papa Parse is available
     if (typeof Papa === 'undefined') {
@@ -6339,26 +6457,32 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('[DEBUG] Starting CSV parsing...');
     console.log('[DEBUG] Files to parse:', {
       roster: rosterFile?.name,
-      logins: loginsFile?.name
+      logins: loginsFile?.name,
+      adjustments: adjustmentsFile?.name
     });
     
     Promise.all([
       rosterFile ? parseCsv(rosterFile).catch(err => { console.error('[DEBUG] Roster parsing error:', err); return []; }) : Promise.resolve([]),
       loginsFile ? parseCsv(loginsFile).catch(err => { console.error('[DEBUG] Daily logins parsing error:', err); return []; }) : Promise.resolve([]),
-    ]).then(([roster, logins]) => {
+      adjustmentsFile ? parseCsv(adjustmentsFile).catch(err => { console.error('[DEBUG] Adjustments parsing error:', err); return []; }) : Promise.resolve([]),
+    ]).then(([roster, logins, adjustments]) => {
       console.debug('[build] rosterFile=', rosterFile && rosterFile.name, 'size=', rosterFile && rosterFile.size);
       console.debug('[build] parsed roster rows=', Array.isArray(roster) ? roster.length : typeof roster, roster && roster[0]);
-      console.debug('[DEBUG] Daily logins parsed:', Array.isArray(logins) ? logins.length : typeof logins, logins && logins[0]);
+  console.debug('[DEBUG] Daily logins parsed:', Array.isArray(logins) ? logins.length : typeof logins, logins && logins[0]);
+  console.debug('[DEBUG] Adjustments parsed:', Array.isArray(adjustments) ? adjustments.length : typeof adjustments, adjustments && adjustments[0]);
   // Pull site/quarter/date/shift controls from Site Board controls block (outside upload form)
-  const siteSel = document.getElementById('site')?.value || 'YHM2';
+  const siteSel = resolvedSite || (document.getElementById('site')?.value || 'YHM2');
   const quarterSel = document.getElementById('quarter')?.value || 'Q1';
+      if (!rosterFile && adjustmentsFile){
+        try { TOAST.info('Building board from adjustments only (no roster uploaded).'); } catch(_) { console.log('[INFO] Adjustments-only build mode'); }
+      }
       
       // Initialize current site early for proper analytics tracking
       STATE.currentSite = siteSel;
       console.log('[DEBUG] Setting current site to:', siteSel);
       
-  const dateStr = document.getElementById('date')?.value || '';
-  const shiftSel = document.querySelector('input[name="shift"]:checked')?.value || 'day';
+  const dateStr = resolvedDate || '';
+  const shiftSel = resolvedShift || 'day';
       const d = parseInputDate(dateStr); const dow = d?.getDay() ?? 0;
       elDate.textContent = dateStr || '-';
       elDay.textContent = d ? shortDay[dow] : '-';
@@ -6367,12 +6491,93 @@ document.addEventListener('DOMContentLoaded', () => {
   elSite.textContent = siteSel;
   STATE.currentQuarter = quarterSel;
 
-      const allowed = new Set(getAllowedCodes(dateStr, shiftSel));
+  const allowed = new Set(getAllowedCodes(dateStr, shiftSel));
       if (allowed.size){ codesBar.classList.remove('hidden'); codesBar.textContent = `Codes active for ${dayNames[dow]} (${elShift.textContent}): ${[...allowed].sort().join(', ')}`; }
       else { codesBar.classList.add('hidden'); codesBar.textContent = ''; }
 
-      // Process daily logins and merge with main roster
-      let combinedRoster = Array.isArray(roster) ? [...roster] : [];
+  // Process daily logins and merge with main roster
+  // If roster is absent, start from an empty array; synthetic entries from adjustments will be added below.
+  let combinedRoster = Array.isArray(roster) ? [...roster] : [];
+      // Apply adjustment actions before filtering (works on raw roster set)
+      try {
+        if (Array.isArray(adjustments) && adjustments.length) {
+          console.log(`[ADJUST] Processing ${adjustments.length} adjustment rows before filtering`);
+          const stats = { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0, added:0, removed:0, unknown:0 };
+          const forceIds = new Set();
+          // Build quick index for roster by User ID / Employee ID
+          const rosterIndex = new Map();
+          combinedRoster.forEach(r => {
+            const uid = String(r['User ID'] || r['UserID'] || r['Login'] || r['Associate'] || r['Employee Login'] || r['Handle'] || '').trim();
+            const eid = String(r['Employee ID'] || r['ID'] || r['EID'] || r['Employee Number'] || '').trim();
+            if (uid) rosterIndex.set(uid.toLowerCase(), r);
+            if (eid) rosterIndex.set(eid.toLowerCase(), r);
+          });
+          const todayKey = (resolvedDate || '').trim();
+          adjustments.forEach(row => {
+            const userId = String(row['User ID'] || row['UserID'] || row['Login'] || row['Associate'] || '').trim();
+            const action = String(row['Action'] || row['Type'] || '').trim().toUpperCase();
+            const dateVal = String(row['Date'] || row['date'] || '').trim();
+            if (!userId || !action) { stats.unknown++; return; }
+            if (todayKey && dateVal && dateVal !== todayKey) { return; } // Only apply for current date
+            if (!['SWAPIN','SWAPOUT','VET','VTO'].includes(action)) { stats.unknown++; return; }
+            stats[action]++;
+            const key = userId.toLowerCase();
+            let existing = rosterIndex.get(key);
+            if (action === 'SWAPIN' || action === 'VET') {
+              forceIds.add(key);
+              if (!existing) {
+                // Try to hydrate from DATABASE by User ID (primary)
+                const dbEmp = (window.DATABASE && typeof DATABASE.getEmployee==='function') ? DATABASE.getEmployee(userId) : null;
+                // Build best-available synthetic roster row so associate appears with real details when possible
+                const synthetic = {
+                  'Employee Name': (dbEmp && dbEmp.name) || userId,
+                  'Employee ID': (dbEmp && (dbEmp.eid||dbEmp.id)) || userId,
+                  'Employee Status': 'Active',
+                  'Shift Pattern': (dbEmp && (dbEmp.shiftPattern || dbEmp.scode)) || ((resolvedShift || 'day') === 'day' ? 'DA' : 'NA'),
+                  'User ID': (dbEmp && (dbEmp.userId || dbEmp.id)) || userId,
+                  'Department ID': (dbEmp && dbEmp.departmentId) || undefined,
+                  'Management Area ID': (dbEmp && dbEmp.managementAreaId) || undefined,
+                  // Pre-classify site so it passes downstream filter
+                  site: (dbEmp && dbEmp.site) || ((resolvedSite || 'YHM2') === 'YHM2' ? 'YHM2' : 'YDD_SHARED'),
+                  '_isUploaded': true,
+                  '_forceInclude': true
+                };
+                combinedRoster.push(synthetic);
+                rosterIndex.set(key, synthetic);
+                const eidKey = String(synthetic['Employee ID']||'').trim().toLowerCase();
+                if (eidKey) rosterIndex.set(eidKey, synthetic);
+                stats.added++;
+                console.log(`[ADJUST] Added synthetic entry for ${userId} via ${action}`);
+              } else {
+                existing['Employee Status'] = 'Active';
+                console.log(`[ADJUST] Marked existing ${userId} active via ${action}`);
+              }
+            } else if (action === 'SWAPOUT' || action === 'VTO') {
+              if (existing) {
+                existing['Employee Status'] = 'Removed'; // Will be filtered out by active status check
+                stats.removed++;
+                console.log(`[ADJUST] Flagged ${userId} for removal via ${action}`);
+              } else {
+                // We still count removal in Adjusted HC; log and continue
+                console.warn(`[ADJUST] ${action} for user ${userId} not in roster; applying count only`);
+              }
+            }
+          });
+          console.log(`[ADJUST] Summary:`, stats);
+          try { window.VLAB_ADJUST_STATS = stats; window.VLAB_ADJUST_FORCE_IDS = Array.from(forceIds); }catch(_){ }
+          // If we are in adjustments-only mode and nothing applied for the selected date, surface a hint
+          try {
+            if (!rosterFile && (stats.added + stats.removed) === 0) {
+              const todayKey = (document.getElementById('date')?.value || '').trim();
+              const hadRows = Array.isArray(adjustments) && adjustments.length > 0;
+              if (hadRows) {
+                const msg = `No adjustments matched current Date ${todayKey}. Ensure the Date column matches the selected date.`;
+                TOAST && TOAST.warn ? TOAST.warn(msg) : console.warn('[ADJUST]', msg);
+              }
+            }
+          } catch(_) { }
+        }
+      } catch(err) { console.error('[ADJUST] Failed applying adjustments:', err); }
       const presentEmployeeIds = new Set(); // Track which employees are present today
       
       console.log(`[DEBUG] Initial roster size: ${combinedRoster.length}`);
@@ -6398,7 +6603,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const originalCount = combinedRoster.length;
         combinedRoster = combinedRoster.filter(employee => {
           const employeeId = (employee['Employee ID'] || employee['ID'] || employee['EID'] || '').toString();
-          return presentEmployeeIds.has(employeeId);
+          const forced = employee['_isUploaded'] === true || employee['_forceInclude'] === true;
+          return forced || presentEmployeeIds.has(employeeId);
         });
         
         console.log(`[DEBUG] Filtered roster from ${originalCount} to ${combinedRoster.length} present associates`);
@@ -6421,15 +6627,17 @@ document.addEventListener('DOMContentLoaded', () => {
         
         activeRows.forEach(r => {
           const eid = String(r['Employee ID'] ?? r['ID'] ?? r['EID'] ?? r['Employee Number'] ?? '').trim();
+          const handle = String(r['User ID'] ?? r['Handle'] ?? r['Employee Handle'] ?? r['Login'] ?? '').trim();
           const name = String(r['Employee Name'] ?? r['Name'] ?? r['Full Name'] ?? '').trim();
           const sc = shiftCodeOf(r['Shift Pattern'] ?? r['ShiftCode'] ?? r['Shift Code'] ?? r['Shift'] ?? r['Pattern']);
           const site = classifySite(r);
           
-          if (!eid || !name) return; // Skip invalid records
+          if ((!eid && !handle) || !name) return; // Skip invalid records
           
-          const existing = DATABASE.getEmployee(eid);
+          const existing = DATABASE.getEmployee(handle || eid);
           const employeeData = {
             eid: eid,
+            userId: handle,
             name: name,
             scode: sc,
             site: site,
@@ -6437,7 +6645,8 @@ document.addEventListener('DOMContentLoaded', () => {
             departmentId: r['Department ID'],
             managementAreaId: r['Management Area ID'],
             shiftPattern: r['Shift Pattern'],
-            lastSeen: new Date().toISOString()
+            lastSeen: new Date().toISOString(),
+            _forceInclude: !!(r._forceInclude || r._isUploaded)
           };
           
           if (existing) {
@@ -6455,8 +6664,8 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log(`[DATABASE] Updated database: ${dbAddedCount} added, ${dbUpdatedCount} updated from ${activeRows.length} active associates`);
       }
 
-      // STEP 2: Filter for DISPLAY only (based on selected site and shift)
-  const filtered = activeRows.filter(r => {
+    // STEP 2: Filter for DISPLAY only (based on selected site and shift)
+  let filtered = activeRows.filter(r => {
         const site = classifySite(r);
         const sc = shiftCodeOf(r['Shift Pattern'] ?? r['ShiftCode'] ?? r['Shift Code'] ?? r['Shift'] ?? r['Pattern']);
         const isUploaded = r['_isUploaded'] === true;
@@ -6483,19 +6692,57 @@ document.addEventListener('DOMContentLoaded', () => {
         return true;
       });
 
+      // If adjustments requested additions but none made it through filters (edge cases),
+      // ensure force-included associates appear by hydrating from DATABASE via User ID
+      try {
+        const forceList = Array.isArray(window.VLAB_ADJUST_FORCE_IDS) ? window.VLAB_ADJUST_FORCE_IDS : [];
+        if (forceList.length) {
+          const presentHandles = new Set(filtered.map(r => String(r['User ID']||'').toLowerCase()));
+          forceList.forEach(uidKey => {
+            const handle = String(uidKey||'').toLowerCase();
+            if (!handle || presentHandles.has(handle)) return;
+            const dbEmp = (window.DATABASE && DATABASE.getEmployee) ? DATABASE.getEmployee(handle) : null;
+            if (!dbEmp) return;
+            const synth = {
+              'Employee Name': dbEmp.name || handle,
+              'Employee ID': dbEmp.eid || handle,
+              'Employee Status': 'Active',
+              'Shift Pattern': dbEmp.shiftPattern || dbEmp.scode || ((resolvedShift||'day')==='day'?'DA':'NA'),
+              'User ID': dbEmp.userId || handle,
+              'Department ID': dbEmp.departmentId,
+              'Management Area ID': dbEmp.managementAreaId,
+              site: dbEmp.site || ((resolvedSite||'YHM2')==='YHM2' ? 'YHM2' : 'YDD_SHARED'),
+              _isUploaded: true,
+              _forceInclude: true
+            };
+            // Apply site/shift gating for display
+            const siteX = classifySite(synth);
+            const scX = shiftCodeOf(synth['Shift Pattern']);
+            if (siteSel === 'YHM2' && siteX !== 'YHM2') return;
+            if ((siteSel === 'YDD2' || siteSel === 'YDD4') && (siteX !== 'YHM2' && siteX !== 'YDD_SHARED')) return;
+            if (!allowed.has(scX)) return;
+            if (shiftSel === 'day' && !DAY_SET.has(scX)) return;
+            if (shiftSel === 'night' && !NIGHT_SET.has(scX)) return;
+            filtered.push(synth);
+          });
+        }
+      } catch (e) { console.warn('[ADJUST-FORCE] fallback include skipped', e); }
+
       // Set default empty arrays for old file types that are no longer used
-      const swaps = []; // Simplified system doesn't use swap files
-      const vetvto = []; // Simplified system doesn't use VET/VTO files  
+  // Adjustment counts from upload (if any)
+  const adj = (window.VLAB_ADJUST_STATS || { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0 });
+  const swaps = []; // Legacy placeholders
+  const vetvto = []; // Legacy placeholders  
       const labshare = []; // Simplified system doesn't use labor share files
 
-      const swapIN  = swaps.filter(x => ((x.Direction ?? x.direction) ?? '').toString().toUpperCase() === 'IN').length;
-      const swapOUT = swaps.filter(x => ((x.Direction ?? x.direction) ?? '').toString().toUpperCase() === 'OUT').length;
-      const vet = vetvto.filter(x => {
+      const swapIN  = adj.SWAPIN + swaps.filter(x => ((x.Direction ?? x.direction) ?? '').toString().toUpperCase() === 'IN').length;
+      const swapOUT = adj.SWAPOUT + swaps.filter(x => ((x.Direction ?? x.direction) ?? '').toString().toUpperCase() === 'OUT').length;
+      const vet = adj.VET + vetvto.filter(x => {
         const t = ((x.Type ?? x.type) ?? '').toString().toUpperCase();
         const acc = ((x.Accepted ?? x.Status) ?? '').toString().toUpperCase();
         return t === 'VET' && (!acc || acc === 'YES' || acc === 'ACCEPTED');
       }).length;
-      const vto = vetvto.filter(x => {
+      const vto = adj.VTO + vetvto.filter(x => {
         const t = ((x.Type ?? x.type) ?? '').toString().toUpperCase();
         const acc = ((x.Accepted ?? x.Status) ?? '').toString().toUpperCase();
         return t === 'VTO' && (!acc || acc === 'YES' || acc === 'ACCEPTED');
@@ -6529,6 +6776,11 @@ document.addEventListener('DOMContentLoaded', () => {
       
       const plannedHC = baseHC - swapOUT + swapIN + vet - vto + lsIN - lsOUT;
       elPlan.textContent = String(plannedHC); elActual.textContent = '0';
+      // Expose counts for Roster Overview chips
+      try {
+        window.VLAB_REGULAR_HC = baseHC;
+        window.VLAB_UPLOADED_LOGINS = presentEmployeeIds.size || 0;
+      } catch(_) {}
 
   STATE.badges = {};
       filtered.forEach((r, idx) => {
@@ -6582,8 +6834,18 @@ document.addEventListener('DOMContentLoaded', () => {
       
       const siteMessage = `📋 Schedule Board Ready: ${baseHC} associates for ${siteSel}` + 
         (presentEmployeeIds.size > 0 ? ` (filtered by ${presentEmployeeIds.size} daily logins)` : '') +
+        ((window.VLAB_ADJUST_STATS && (window.VLAB_ADJUST_STATS.SWAPIN || window.VLAB_ADJUST_STATS.SWAPOUT || window.VLAB_ADJUST_STATS.VET || window.VLAB_ADJUST_STATS.VTO))
+          ? ` | Adjustments: +${(window.VLAB_ADJUST_STATS.SWAPIN||0)+(window.VLAB_ADJUST_STATS.VET||0)} / -${(window.VLAB_ADJUST_STATS.SWAPOUT||0)+(window.VLAB_ADJUST_STATS.VTO||0)}`
+          : '') +
         databaseMessage;
       output.innerHTML = `<div style="color: #059669; font-weight: 500;">${siteMessage}</div>`;
+      if (window.VLAB_ADJUST_STATS) {
+        const a = window.VLAB_ADJUST_STATS;
+        const plus = (a.SWAPIN||0) + (a.VET||0); const minus = (a.SWAPOUT||0) + (a.VTO||0);
+        if (plus || minus) {
+          try { TOAST.show(`Adjusted: +${plus} / -${minus}`, 'info'); } catch(_) { console.log(`[ADJUST] Net +${plus} / -${minus}`); }
+        }
+      }
       
       console.log('[BUILD-COMPLETE] Board ready with site-filtered associates');
 
@@ -6648,6 +6910,13 @@ document.addEventListener('DOMContentLoaded', () => {
             loginsLabel.style.color = '#059669';
           }
         }
+          if (currentFormState.adjustmentsFileName) {
+            const adjLabel = document.getElementById('label-adjustments');
+            if (adjLabel) {
+              adjLabel.textContent = `✅ ${currentFormState.adjustmentsFileName}`;
+              adjLabel.style.color = '#a16207';
+            }
+          }
         
         console.log('[DEBUG] Form state preserved after processing');
         
@@ -7066,399 +7335,297 @@ document.addEventListener('DOMContentLoaded', () => {
       case 'rotation':
         loadRotationContent();
         break;
-      case 'insights':
-        loadInsightsContent();
-        break;
     }
   }
 
   function loadOverviewContent() {
-    // Session Summary
-    const currentSession = STATE.analytics.sessions.find(s => s.id === ANALYTICS.currentSessionId);
+    // Session Summary — total associates, active assignments, current site
     const sessionSummary = document.getElementById('sessionSummary');
-    if (currentSession) {
-      sessionSummary.innerHTML = `
-        <div class="metric-row">
-          <span class="metric-label">Current Session</span>
-          <span class="metric-value">${currentSession.date} - ${currentSession.shift}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-label">Planned HC</span>
-          <span class="metric-value">${currentSession.plannedHC}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-label">Actual HC</span>
-          <span class="metric-value">${currentSession.actualHC}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-label">Efficiency</span>
-          <span class="metric-value ${currentSession.efficiency >= 90 ? 'positive' : currentSession.efficiency < 70 ? 'negative' : ''}">${currentSession.efficiency}%</span>
-        </div>
-      `;
-    } else {
-      sessionSummary.innerHTML = '<p>No active session</p>';
-    }
-
-    // Assignment Activity
-    const recentHistory = STATE.analytics.history.slice(-10).reverse();
-    const assignmentActivity = document.getElementById('assignmentActivity');
-    assignmentActivity.innerHTML = `
+    const totalEmployees = Object.keys(STATE.badges).length;
+    const activeAssignments = Object.values(STATE.badges).filter(b => b.loc && b.loc !== 'unassigned' && b.loc !== 'assigned-elsewhere').length;
+    const currentSite = STATE.currentSite || document.getElementById('site')?.value || '—';
+    sessionSummary.innerHTML = `
       <div class="metric-row">
-        <span class="metric-label">Total Assignments</span>
-        <span class="metric-value">${STATE.analytics.history.length}</span>
+        <span class="metric-label">Total Associates</span>
+        <span class="metric-value">${totalEmployees}</span>
       </div>
       <div class="metric-row">
-        <span class="metric-label">Today's Assignments</span>
-        <span class="metric-value">${STATE.analytics.history.filter(h => h.date === new Date().toDateString()).length}</span>
+        <span class="metric-label">Active Assignments</span>
+        <span class="metric-value">${activeAssignments}</span>
       </div>
       <div class="metric-row">
-        <span class="metric-label">Reassignments</span>
-        <span class="metric-value">${STATE.analytics.history.filter(h => h.action === 'reassign').length}</span>
+        <span class="metric-label">Current Site</span>
+        <span class="metric-value">${currentSite}</span>
       </div>
     `;
 
-    // Process Distribution
-    const processStats = {};
-    STATE.analytics.history.forEach(h => {
-      if (h.toLocation !== 'unassigned') {
-        processStats[h.toLocation] = (processStats[h.toLocation] || 0) + 1;
+    // Assignment Activity — per current session (fallback to today)
+    const sessionId = ANALYTICS.getCurrentSessionId && ANALYTICS.getCurrentSessionId();
+    let scope = [];
+    if (sessionId) {
+      scope = (STATE.analytics.history || []).filter(h => h.sessionId === sessionId);
+    } else {
+      const today = new Date().toDateString();
+      scope = (STATE.analytics.history || []).filter(h => h.date === today);
+    }
+    const assignedCount = scope.filter(h => h.action === 'assign').length;
+    const unassignedCount = scope.filter(h => h.action === 'unassign').length;
+    const swappedCount = scope.filter(h => h.action === 'reassign').length;
+    const assignmentActivity = document.getElementById('assignmentActivity');
+    assignmentActivity.innerHTML = `
+      <div class="metric-row"><span class="metric-label">Assigned</span><span class="metric-value">${assignedCount}</span></div>
+      <div class="metric-row"><span class="metric-label">Unassigned</span><span class="metric-value">${unassignedCount}</span></div>
+      <div class="metric-row"><span class="metric-label">Swapped</span><span class="metric-value">${swappedCount}</span></div>
+    `;
+
+    // Process Distribution — grouped to Pick/Sort/Dock
+    const processDistribution = document.getElementById('processDistribution');
+    const groupCounts = { PICK: 0, SORT: 0, DOCK: 0 };
+    (STATE.analytics.history || []).forEach(h => {
+      if (h.toLocation && h.toLocation !== 'unassigned') {
+        const g = mapProcessToPath(h.toLocation);
+        if (groupCounts[g] != null) groupCounts[g] += 1;
       }
     });
-    
-    const processDistribution = document.getElementById('processDistribution');
-    const sortedProcesses = Object.entries(processStats).sort((a, b) => b[1] - a[1]).slice(0, 5);
-    processDistribution.innerHTML = sortedProcesses.map(([process, count]) => `
-      <div class="metric-row">
-        <span class="metric-label">${process.toUpperCase()}</span>
-        <span class="metric-value">${count}</span>
-      </div>
-    `).join('') || '<p>No process assignments yet</p>';
+    processDistribution.innerHTML = `
+      <div class="metric-row"><span class="metric-label">Pick</span><span class="metric-value">${groupCounts.PICK}</span></div>
+      <div class="metric-row"><span class="metric-label">Sort</span><span class="metric-value">${groupCounts.SORT}</span></div>
+      <div class="metric-row"><span class="metric-label">Dock</span><span class="metric-value">${groupCounts.DOCK}</span></div>
+    `;
 
-    // Efficiency Metrics
+    // Efficiency Metrics — placeholders for UPH/CPLH + utilization
     const efficiencyMetrics = document.getElementById('efficiencyMetrics');
-    const totalEmployees = Object.keys(STATE.badges).length;
-    const assignedEmployees = Object.values(STATE.badges).filter(b => b.loc !== 'unassigned').length;
-    const utilizationRate = totalEmployees > 0 ? ((assignedEmployees / totalEmployees) * 100).toFixed(1) : 0;
-    
+    const utilizationRate = totalEmployees > 0 ? ((activeAssignments / totalEmployees) * 100).toFixed(1) : 0;
     efficiencyMetrics.innerHTML = `
-      <div class="metric-row">
-        <span class="metric-label">Utilization Rate</span>
-        <span class="metric-value ${utilizationRate >= 85 ? 'positive' : utilizationRate < 60 ? 'negative' : ''}">${utilizationRate}%</span>
-      </div>
-      <div class="metric-row">
-        <span class="metric-label">Assigned</span>
-        <span class="metric-value">${assignedEmployees}</span>
-      </div>
-      <div class="metric-row">
-        <span class="metric-label">Available</span>
-        <span class="metric-value">${totalEmployees - assignedEmployees}</span>
-      </div>
+      <div class="metric-row"><span class="metric-label">UPH (Avg)</span><span class="metric-value">—</span></div>
+      <div class="metric-row"><span class="metric-label">CPLH (Avg)</span><span class="metric-value">—</span></div>
+      <div class="metric-row"><span class="metric-label">Utilization Rate</span><span class="metric-value ${utilizationRate >= 85 ? 'positive' : utilizationRate < 60 ? 'negative' : ''}">${utilizationRate}%</span></div>
     `;
   }
 
   function loadPerformanceContent() {
-    const performanceRankings = document.getElementById('performanceRankings');
-    const topPerformers = document.getElementById('topPerformers');
-    const skillDevelopment = document.getElementById('skillDevelopment');
+    const elPlannedActual = document.getElementById('perfPlannedActual');
+    const elAttendance = document.getElementById('perfAttendance');
+    const elVetVto = document.getElementById('perfVetVto');
+    const elProcessPerf = document.getElementById('perfProcessPerformance');
 
-    // Performance Rankings
-    const sortedPerformance = Object.values(STATE.analytics.performance)
-      .sort((a, b) => b.performanceScore - a.performanceScore)
-      .slice(0, 10);
+    // Filters
+    const shiftSel = document.getElementById('performanceShiftFilter');
+    const procSel = document.getElementById('performanceProcessFilter');
+    const dateSel = document.getElementById('performanceDateFilter');
 
-    if (sortedPerformance.length > 0) {
-      performanceRankings.innerHTML = sortedPerformance.map((emp, index) => `
-        <div class="metric-row">
-          <div>
-            <div class="metric-label">#${index + 1} ${emp.name}</div>
-            <div class="performance-bar">
-              <div class="performance-fill" style="width: ${emp.performanceScore}%"></div>
-            </div>
-          </div>
-          <span class="metric-value">${emp.performanceScore.toFixed(1)}</span>
-        </div>
-      `).join('');
-    } else {
-      performanceRankings.innerHTML = '<p>No performance data available yet</p>';
+    // Default filter values
+    if (dateSel && !dateSel.value) {
+      const d = document.getElementById('date')?.value; if (d) dateSel.value = d;
     }
+    const shift = (shiftSel && shiftSel.value !== 'auto') ? shiftSel.value : (document.querySelector('input[name="shift"]:checked')?.value || 'day');
+    const proc = (procSel && procSel.value) || 'all';
 
-    // Top Performers (Top 3) with Rotation Status
-    const top3 = sortedPerformance.slice(0, 3);
-    topPerformers.innerHTML = top3.map((emp, index) => {
-      const rotationScore = ANALYTICS.ROTATION ? ANALYTICS.ROTATION.calculateRotationScore(emp.employeeId) : null;
-      const rotationStatus = rotationScore ? rotationScore.status : 'unknown';
-      const rotationColor = {
-        'excellent': '#059669',
-        'good': '#10b981', 
-        'needs_improvement': '#f59e0b',
-        'poor': '#dc2626',
-        'unknown': '#6b7280'
-      }[rotationStatus];
-      
-      return `
-        <div class="metric-row">
-          <span class="metric-label">${emp.name}</span>
-          <span class="metric-value">${emp.performanceScore.toFixed(1)}</span>
-        </div>
-        <div style="font-size: 12px; color: #6b7280; margin-bottom: 8px;">
-          Versatility: ${emp.versatility} processes | Assignments: ${emp.totalAssignments}
-        </div>
-        <div style="font-size: 11px; color: ${rotationColor}; margin-bottom: 12px;">
-          🔄 Rotation: ${rotationStatus.replace('_', ' ')} ${rotationScore ? `(${rotationScore.score})` : ''}
-        </div>
-      `;
-    }).join('') || '<p>No performance data available</p>';
-
-    // Skill Development
-    const allEmployees = Object.values(STATE.analytics.performance);
-    const avgVersatility = allEmployees.length > 0 ? 
-      allEmployees.reduce((sum, emp) => sum + emp.versatility, 0) / allEmployees.length : 0;
-    
-    skillDevelopment.innerHTML = `
-      <div class="metric-row">
-        <span class="metric-label">Average Versatility</span>
-        <span class="metric-value">${avgVersatility.toFixed(1)} processes</span>
-      </div>
-      <div class="metric-row">
-        <span class="metric-label">Most Experienced Process</span>
-        <span class="metric-value">${getMostExperiencedProcess()}</span>
-      </div>
-      <div class="metric-row">
-        <span class="metric-label">Training Opportunities</span>
-        <span class="metric-value">${getTrainingOpportunityCount()}</span>
-      </div>
+    // Planned vs Actual Headcount
+    const planned = Number(document.getElementById('plannedVolumeStub')?.value || 0);
+    const actual = Object.values(STATE.badges).filter(b => b.loc && b.loc !== 'unassigned' && b.loc !== 'assigned-elsewhere').length;
+    const pct = planned > 0 ? Math.min(100, Math.round((actual / planned) * 100)) : 0;
+    elPlannedActual.innerHTML = `
+      <div class="metric-row"><span class="metric-label">Planned</span><span class="metric-value">${planned}</span></div>
+      <div class="metric-row"><span class="metric-label">Actual</span><span class="metric-value">${actual}</span></div>
+      <div class="performance-bar"><div class="performance-fill" style="width:${pct}%"></div></div>
+      <div class="text-xs text-gray-500 mt-1">${pct}% of plan</div>
     `;
+
+    // Attendance Rate (placeholder: assigned/total)
+    const total = Object.keys(STATE.badges).length;
+    const attendance = total > 0 ? Math.round((actual / total) * 100) : 0;
+    elAttendance.innerHTML = `
+      <div class="metric-row"><span class="metric-label">Attendance Rate</span><span class="metric-value ${attendance >= 85 ? 'positive' : attendance < 60 ? 'negative' : ''}">${attendance}%</span></div>
+      <div class="text-xs text-gray-500">Derived from active assignments vs total roster</div>
+    `;
+
+    // VET / VTO Participation (placeholder)
+    elVetVto.innerHTML = `
+      <div class="metric-row"><span class="metric-label">VET Participation</span><span class="metric-value">—</span></div>
+      <div class="metric-row"><span class="metric-label">VTO Participation</span><span class="metric-value">—</span></div>
+      <div class="text-xs text-gray-500">Bind to future VET/VTO data source</div>
+    `;
+
+    // Process-level Performance (Pick/Sort/Dock grouped rates)
+    const grouped = { PICK: 0, SORT: 0, DOCK: 0 };
+    Object.values(STATE.badges).forEach(b => {
+      const g = mapProcessToPath(b.loc);
+      if (g && grouped[g] != null) grouped[g] += (b.loc && b.loc !== 'unassigned') ? 1 : 0;
+    });
+    const rows = ['PICK','SORT','DOCK']
+      .filter(g => proc === 'all' || proc === g)
+      .map(g => `<div class="metric-row"><span class="metric-label">${g.charAt(0) + g.slice(1).toLowerCase()}</span><span class="metric-value">${grouped[g]}</span></div>`)
+      .join('');
+    elProcessPerf.innerHTML = rows || '<p>No data</p>';
+
+    // Re-bind filter listeners once
+    if (!loadPerformanceContent._bound) {
+      loadPerformanceContent._bound = true;
+      shiftSel && shiftSel.addEventListener('change', () => loadPerformanceContent());
+      procSel && procSel.addEventListener('change', () => loadPerformanceContent());
+      dateSel && dateSel.addEventListener('change', () => loadPerformanceContent());
+    }
   }
 
   function loadAssignmentsContent(selectedQuarter = null) {
-    const assignmentHistory = document.getElementById('assignmentHistory');
+    const tbody = document.getElementById('assignmentsTableBody');
     const assignmentPatterns = document.getElementById('assignmentPatterns');
     const assignmentRecommendations = document.getElementById('assignmentRecommendations');
-    
-    // Get selected quarter from filter dropdown
-    const quarterFilter = document.getElementById('quarterFilter');
-    const filterQuarter = selectedQuarter || (quarterFilter ? quarterFilter.value : 'all');
 
-    // Current Assignments Across All Sites
-    let currentAssignmentsHTML = '<h4>Current Assignments by Site</h4>';
-    Object.entries(STATE.sites).forEach(([siteCode, siteData]) => {
-      const assignments = siteData.assignments || {};
-      const assignmentCount = Object.keys(assignments).length;
-      
-      currentAssignmentsHTML += `
-        <div class="site-assignment-section">
-          <h5><span class="site-badge site-${siteCode.toLowerCase()}">${siteCode}</span> (${assignmentCount} assigned)</h5>
-      `;
-      
-      if (assignmentCount > 0) {
-        const assignmentsByProcess = {};
-        Object.entries(assignments).forEach(([badgeId, location]) => {
-          if (!assignmentsByProcess[location]) assignmentsByProcess[location] = [];
-          const badge = STATE.badges[badgeId];
-          if (badge) {
-            assignmentsByProcess[location].push(badge);
-          }
-        });
-        
-        Object.entries(assignmentsByProcess).forEach(([process, badges]) => {
-          currentAssignmentsHTML += `
-            <div class="process-assignment">
-              <strong>${process.toUpperCase()}</strong> (${badges.length}):
-              ${badges.map(b => `<span class="employee-name">${b.name || b.eid}</span>`).join(', ')}
-            </div>
-          `;
-        });
-      } else {
-        currentAssignmentsHTML += '<p class="no-assignments">No current assignments</p>';
-      }
-      
-      currentAssignmentsHTML += '</div>';
-    });
+    if (!tbody) return;
 
-    // Filter assignment history by quarter
-    let filteredHistory = STATE.analytics.history;
-    if (filterQuarter !== 'all') {
-      filteredHistory = STATE.analytics.history.filter(entry => entry.quarter === filterQuarter);
-    }
-    
-    // Take last 50 assignments (or all if filtered by quarter) and reverse for newest first
-    const displayHistory = filterQuarter === 'all' ? filteredHistory.slice(-50).reverse() : filteredHistory.reverse();
-    
-    // Create quarter summary with statistics
-    const quarterStats = {};
-    STATE.analytics.history.forEach(entry => {
-      const q = entry.quarter || 'Q1';
-      quarterStats[q] = (quarterStats[q] || 0) + 1;
-    });
-    
-    const quarterSummary = filterQuarter === 'all' ? 
-      'Showing recent assignments from all quarters' :
-      `Showing all assignments from ${filterQuarter} (${displayHistory.length} total)`;
-    
-    const statsHTML = filterQuarter === 'all' ? 
-      `<div class="text-sm text-gray-600 mt-2">Quarter breakdown: ${Object.entries(quarterStats).map(([q, count]) => `${q}: ${count}`).join(', ')}</div>` :
-      '';
-    
-    const historyHTML = `
-      <div class="quarter-summary mb-4 p-3 bg-gray-50 rounded border">
-        <strong>${quarterSummary}</strong>
-        ${filterQuarter !== 'all' ? `<div class="text-sm text-gray-600 mt-1">Filter: ${filterQuarter} assignments only</div>` : ''}
-        ${statsHTML}
-      </div>
-    ` + displayHistory.map(entry => `
-      <div class="history-item">
-        <div class="history-timestamp">${new Date(entry.timestamp).toLocaleString()}</div>
-        <div class="history-action">
-          <span class="quarter-badge bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded">${entry.quarter || 'Q1'}</span>
-          <span class="site-badge site-${(entry.site||'').toLowerCase()}">${entry.site || 'N/A'}</span>
-          ${entry.employeeName} ${entry.action === 'assign' ? 'assigned to' : 
-            entry.action === 'unassign' ? 'unassigned from' : 'moved to'} 
-          ${entry.toLocation.toUpperCase()}
-        </div>
-      </div>
-    `).join('') || '<p>No assignment history available</p>';
+    // Filter by quarter
+    const filterQuarter = selectedQuarter || (document.getElementById('quarterFilter')?.value || 'all');
+    let rows = (STATE.analytics.history || []).slice();
+    if (filterQuarter !== 'all') rows = rows.filter(r => r.quarter === filterQuarter);
 
-    assignmentHistory.innerHTML = currentAssignmentsHTML + '<h4>Recent Assignment History</h4>' + historyHTML;
-
-    // Assignment Patterns
-    const patternStats = analyzeAssignmentPatterns();
-    assignmentPatterns.innerHTML = `
-      <div class="metric-row">
-        <span class="metric-label">Peak Assignment Hour</span>
-        <span class="metric-value">${patternStats.peakHour}:00</span>
-      </div>
-      <div class="metric-row">
-        <span class="metric-label">Most Active Process</span>
-        <span class="metric-value">${patternStats.mostActiveProcess}</span>
-      </div>
-      <div class="metric-row">
-        <span class="metric-label">Avg Time Between Moves</span>
-        <span class="metric-value">${patternStats.avgTimeBetweenMoves} min</span>
-      </div>
-    `;
-
-    // Assignment Recommendations with Rotation Fairness
-    const processOptions = ['cb', 'ibws', 'lineloaders', 'trickle', 'dm'];
-    let allRecommendations = [];
-    
-    processOptions.forEach(process => {
-      const recommendations = ANALYTICS.getRecommendations(process, { fairRotation: true });
-      recommendations.slice(0, 2).forEach(rec => {
-        rec.targetProcess = process.toUpperCase();
-        allRecommendations.push(rec);
-      });
-    });
-    
-    // Sort by rotation fairness and score
-    allRecommendations.sort((a, b) => {
-      const aRotation = ANALYTICS.ROTATION ? ANALYTICS.ROTATION.calculateRotationScore(a.employeeId) : null;
-      const bRotation = ANALYTICS.ROTATION ? ANALYTICS.ROTATION.calculateRotationScore(b.employeeId) : null;
-      
-      // Prioritize poor rotation employees
-      if (aRotation && bRotation) {
-        const priorityOrder = { poor: 4, needs_improvement: 3, good: 2, excellent: 1 };
-        const aPriority = priorityOrder[aRotation.status] || 0;
-        const bPriority = priorityOrder[bRotation.status] || 0;
-        
-        if (aPriority !== bPriority) return bPriority - aPriority;
-      }
-      
-      return b.score - a.score;
-    });
-    
-    assignmentRecommendations.innerHTML = allRecommendations.slice(0, 5).map(rec => {
-      const rotationScore = ANALYTICS.ROTATION ? ANALYTICS.ROTATION.calculateRotationScore(rec.employeeId) : null;
-      const rotationBadge = rotationScore ? 
-        `<span style="color: ${rotationScore.status === 'poor' ? '#dc2626' : rotationScore.status === 'needs_improvement' ? '#f59e0b' : '#059669'}; font-size: 10px;">
-          🔄 ${rotationScore.status.replace('_', ' ')} (${rotationScore.score})
-        </span>` : '';
-        
+    // Render table
+    const toRow = (r) => {
+      const path = mapProcessToPath(r.toLocation || '').toUpperCase();
       return `
-        <div class="recommendation-item">
-          <div class="recommendation-header">${rec.name} → ${rec.targetProcess}</div>
-          <div class="recommendation-reason">${rec.fullReason || rec.reason} (Score: ${rec.score.toFixed(1)})</div>
-          ${rotationBadge}
-        </div>
+        <tr>
+          <td class="px-3 py-1">${r.employeeId || ''}</td>
+          <td class="px-3 py-1">${r.employeeName || ''}</td>
+          <td class="px-3 py-1">${path}</td>
+          <td class="px-3 py-1">${r.action || ''}</td>
+          <td class="px-3 py-1">${new Date(r.timestamp).toLocaleString()}</td>
+          <td class="px-3 py-1">${r.quarter || ''}</td>
+        </tr>`;
+    };
+    tbody.innerHTML = rows.slice(-200).reverse().map(toRow).join('');
+
+    // Bind local search for assignments log
+    const search = document.getElementById('assignmentsSearch');
+    if (search && !search._bound) {
+      search._bound = true;
+      search.addEventListener('input', () => {
+        const q = (search.value || '').toLowerCase();
+        Array.from(tbody.children).forEach(tr => {
+          tr.style.display = !q || tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+        });
+      });
+    }
+
+    // Patterns (quick summary)
+    const patternStats = analyzeAssignmentPatterns();
+    if (assignmentPatterns) {
+      assignmentPatterns.innerHTML = `
+        <div class="metric-row"><span class="metric-label">Peak Assignment Hour</span><span class="metric-value">${patternStats.peakHour}:00</span></div>
+        <div class="metric-row"><span class="metric-label">Most Active Process</span><span class="metric-value">${patternStats.mostActiveProcess}</span></div>
+        <div class="metric-row"><span class="metric-label">Avg Time Between Moves</span><span class="metric-value">${patternStats.avgTimeBetweenMoves} min</span></div>
       `;
-    }).join('') || '<p>No recommendations available</p>';
+    }
+
+    // Recommendations (reuse existing engine, show few)
+    if (assignmentRecommendations) {
+      const processOptions = ['cb', 'ibws', 'lineloaders', 'trickle', 'dm'];
+      let allRec = [];
+      processOptions.forEach(p => {
+        const recs = ANALYTICS.getRecommendations(p, { fairRotation: true }).slice(0, 2);
+        recs.forEach(r => { r.targetProcess = p.toUpperCase(); allRec.push(r); });
+      });
+      allRec.sort((a,b)=> b.score - a.score);
+      assignmentRecommendations.innerHTML = allRec.slice(0,5).map(r => `
+        <div class="recommendation-item">
+          <div class="recommendation-header">${r.name} → ${r.targetProcess}</div>
+          <div class="recommendation-reason">${r.fullReason || r.reason} (Score: ${r.score.toFixed(1)})</div>
+        </div>
+      `).join('') || '<p>No recommendations available</p>';
+    }
   }
 
   function loadRotationContent() {
-    const smartAssignmentQueue = document.getElementById('smartAssignmentQueue');
-    const rotationAlertsPanel = document.getElementById('rotationAlertsPanel');
-    const rotationFairnessMetrics = document.getElementById('rotationFairnessMetrics');
-    
-    const mgmt = STATE.analytics.rotationManagement;
-    
-    // Smart Assignment Queue
-    if (mgmt && mgmt.assignmentQueue && mgmt.assignmentQueue.length > 0) {
-      smartAssignmentQueue.innerHTML = mgmt.assignmentQueue.slice(0, 5).map(item => `
-        <div class="recommendation-item" style="margin-bottom: 12px;">
-          <div class="recommendation-header">${item.employeeName} → ${item.recommendedProcess.toUpperCase()}</div>
-          <div class="recommendation-reason">${item.reason}</div>
-          <div style="font-size: 11px; color: #6b7280; margin-top: 4px;">
-            Priority: ${item.priority} | Current Score: ${item.rotationScore} | Expected: +${item.expectedImprovement}
-          </div>
-          <button onclick="ANALYTICS.ROTATION.executeAssignment('${item.employeeId}', '${item.recommendedProcess}')" 
-                  style="margin-top: 8px; padding: 4px 8px; background: #10b981; color: white; border: none; border-radius: 4px; font-size: 12px; cursor: pointer;">
-            Execute Assignment
-          </button>
-        </div>
-      `).join('');
-    } else {
-      smartAssignmentQueue.innerHTML = '<p>No smart assignments available. Lock assignments to generate recommendations.</p>';
+    const elSummary = document.getElementById('rotationSummary');
+    const elIndex = document.getElementById('rotationFairnessIndex');
+    const qSel = document.getElementById('rotationQuarterToggle');
+
+    const quarter = qSel?.value || (STATE.currentQuarter || 'Q1');
+    const hist = (STATE.analytics.history || []).filter(h => h.quarter === quarter);
+
+    // Build exposure per associate across Pick/Sort/Dock
+    const exposure = {}; // { eid: { name, PICK, SORT, DOCK } }
+    hist.forEach(h => {
+      if (!h.employeeId) return;
+      const g = mapProcessToPath(h.toLocation || '');
+      if (!['PICK','SORT','DOCK'].includes(g)) return;
+      if (!exposure[h.employeeId]) exposure[h.employeeId] = { name: h.employeeName || h.employeeId, PICK:0, SORT:0, DOCK:0 };
+      exposure[h.employeeId][g] += 1;
+    });
+
+    // Render simple summary table (top 20 by activity)
+    const rows = Object.entries(exposure)
+      .map(([eid, ex]) => ({ eid, ...ex, total: ex.PICK + ex.SORT + ex.DOCK }))
+      .sort((a,b)=> b.total - a.total)
+      .slice(0, 20)
+      .map(r => `<tr>
+        <td class="px-3 py-1">${r.eid}</td>
+        <td class="px-3 py-1">${r.name}</td>
+        <td class="px-3 py-1">${r.PICK}</td>
+        <td class="px-3 py-1">${r.SORT}</td>
+        <td class="px-3 py-1">${r.DOCK}</td>
+      </tr>`)
+      .join('');
+    elSummary.innerHTML = rows ? `
+      <div class="overflow-auto">
+        <table class="min-w-full text-sm">
+          <thead class="bg-gray-100 text-xs uppercase tracking-wider">
+            <tr>
+              <th class="px-3 py-2 text-left">Associate ID</th>
+              <th class="px-3 py-2 text-left">Name</th>
+              <th class="px-3 py-2 text-left">Pick</th>
+              <th class="px-3 py-2 text-left">Sort</th>
+              <th class="px-3 py-2 text-left">Dock</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    ` : '<p>No rotation data for selected quarter.</p>';
+
+    // Fairness Index — average balance score across associates
+    const fairnessScores = Object.values(exposure).map(ex => {
+      const arr = [ex.PICK, ex.SORT, ex.DOCK];
+      const sum = arr.reduce((s,v)=>s+v,0);
+      if (sum === 0) return 100; // neutral when no exposure yet
+      // Compute dispersion: stddev normalized
+      const mean = sum/3;
+      const variance = arr.reduce((s,v)=> s + Math.pow(v-mean,2), 0)/3;
+      const std = Math.sqrt(variance);
+      // Normalize: higher std -> lower fairness. Assume a practical max std of mean (all in one bucket)
+      const worst = mean; // approximation
+      const score = Math.max(0, Math.min(100, Math.round(100 * (1 - (std / (worst || 1))))));
+      return score;
+    });
+    const overall = fairnessScores.length ? Math.round(fairnessScores.reduce((s,v)=>s+v,0)/fairnessScores.length) : 100;
+    elIndex.innerHTML = `
+      <div class="metric-row"><span class="metric-label">Fairness Index</span><span class="metric-value ${overall >= 70 ? 'positive' : overall < 50 ? 'negative' : ''}">${overall}</span></div>
+      <div class="performance-bar"><div class="performance-fill" style="width:${overall}%"></div></div>
+      <div class="text-xs text-gray-500 mt-1">0–100 scale based on exposure balance across Pick/Sort/Dock</div>
+    `;
+
+    if (!loadRotationContent._bound) {
+      loadRotationContent._bound = true;
+      qSel && qSel.addEventListener('change', () => loadRotationContent());
     }
-    
-    // Rotation Alerts
-    if (mgmt && mgmt.rotationAlerts && mgmt.rotationAlerts.length > 0) {
-      rotationAlertsPanel.innerHTML = mgmt.rotationAlerts.map(alert => `
-        <div class="insight-item" style="background: ${alert.type === 'urgent' ? '#fee2e2' : alert.type === 'warning' ? '#fef3c7' : '#f0f4ff'}; margin-bottom: 8px;">
-          <div class="insight-title" style="color: ${alert.type === 'urgent' ? '#dc2626' : alert.type === 'warning' ? '#d97706' : '#3b82f6'};">
-            ${alert.employeeName} - ${alert.type.toUpperCase()}
-          </div>
-          <div class="insight-description" style="color: #374151;">${alert.message}</div>
-          <div style="font-size: 11px; margin-top: 4px; font-weight: 500;">Action: ${alert.action}</div>
-        </div>
-      `).join('');
-    } else {
-      rotationAlertsPanel.innerHTML = '<p>No rotation alerts. System will generate alerts when rotation issues are detected.</p>';
-    }
-    
-    // Fairness Metrics
-    if (mgmt && mgmt.rotationRules) {
-      const employees = Object.values(STATE.analytics.performance);
-      const rotationScores = employees.map(emp => ANALYTICS.ROTATION.calculateRotationScore(emp.employeeId));
-      const avgScore = rotationScores.length > 0 ? 
-        rotationScores.reduce((sum, score) => sum + score.score, 0) / rotationScores.length : 0;
-      
-      const statusCounts = { poor: 0, needs_improvement: 0, good: 0, excellent: 0 };
-      rotationScores.forEach(score => statusCounts[score.status]++);
-      
-      rotationFairnessMetrics.innerHTML = `
-        <div class="metric-row">
-          <span class="metric-label">Average Rotation Score</span>
-          <span class="metric-value ${avgScore >= 70 ? 'positive' : avgScore < 50 ? 'negative' : ''}">${avgScore.toFixed(1)}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-label">Excellent Rotation</span>
-          <span class="metric-value positive">${statusCounts.excellent}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-label">Needs Attention</span>
-          <span class="metric-value ${statusCounts.poor > 0 ? 'negative' : ''}">${statusCounts.poor + statusCounts.needs_improvement}</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-label">Max Consecutive Rule</span>
-          <span class="metric-value">${mgmt.rotationRules.maxConsecutiveSameProcess} assignments</span>
-        </div>
-        <div class="metric-row">
-          <span class="metric-label">Fairness Threshold</span>
-          <span class="metric-value">${mgmt.rotationRules.fairnessThreshold} points</span>
-        </div>
-      `;
-    } else {
-      rotationFairnessMetrics.innerHTML = '<p>Lock assignments to activate rotation management and view fairness metrics.</p>';
-    }
+  }
+
+  // --- Helpers: Map granular process keys to Pick/Sort/Dock groups ---
+  function mapProcessToPath(key) {
+    if (!key) return 'SORT';
+    const k = String(key).toLowerCase();
+    // Note: This grouping is a placeholder; adjust based on your site's taxonomy
+    const PICK = new Set(['pick','pa','ps']);
+    const SORT = new Set(['e2s','e2sws','tws','sap','dm','idrt','each to sort']);
+    const DOCK = new Set(['dock','dockws','pb','tpb','lineloaders','pallet build','line loaders']);
+    if (PICK.has(k)) return 'PICK';
+    if (SORT.has(k)) return 'SORT';
+    if (DOCK.has(k)) return 'DOCK';
+    // Try prefix/contains matching
+    if (k.includes('dock')) return 'DOCK';
+    if (k.includes('pick')) return 'PICK';
+    if (k.includes('sort') || k.includes('e2s') || k.includes('tote') || k.includes('sap') || k.includes('dm')) return 'SORT';
+    return 'SORT';
   }
 
   function loadInsightsContent() {
@@ -7934,6 +8101,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     // Confirm quarter lock action
+    // Always read the live quarter select to avoid stale state
+    const quarterEl = document.getElementById('quarter');
+    const selectedQuarter = (quarterEl && quarterEl.value) ? quarterEl.value : (STATE.currentQuarter || 'Q1');
+    // Sync state if user changed dropdown but handler didn't fire yet
+    if (selectedQuarter !== STATE.currentQuarter) {
+      console.log(`[LOCK] Syncing currentQuarter from '${STATE.currentQuarter}' to '${selectedQuarter}' before lock`);
+      STATE.currentQuarter = selectedQuarter;
+    }
     const currQ = STATE.currentQuarter || 'Q1';
     if (STATE.quarterLocks && STATE.quarterLocks[currQ]){ alert(`Quarter ${currQ} is already locked.`); return; }
     const confirmMessage = `Lock ${assignedBadges.length} assignments for ${currQ}?\n\nThis will:\n• Freeze current quarter assignments\n• Include quarter in analytics logs\n• Generate smart rotation recommendations\n\nProceed?`;

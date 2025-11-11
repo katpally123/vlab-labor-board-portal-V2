@@ -31,6 +31,44 @@ Employee ID,Employee Name,Employee Status,Shift Pattern,Department ID,Management
 ```
 
 ### Analytics System
+The Analytics tab provides four focused dashboards:
+
+- Overview: Session summary (total associates, active assignments, current site), assignment activity (assigned/unassigned/swapped), process distribution across Pick/Sort/Dock, and efficiency placeholders (UPH/CPLH, utilization).
+- Performance: Planned vs Actual headcount, attendance rate, VET/VTO placeholders, and grouped process-level performance. Filters by shift, date, and process are available.
+- Assignments: Log table with Associate ID/Name, Process Path (Pick/Sort/Dock), Action, Timestamp, and Quarter. Includes a local filter and a global Export CSV button in the page header.
+- Rotation: Rotation summary across Pick/Sort/Dock per associate with a Fairness Index (0–100) and quarter toggle (Q1–Q3).
+
+UI details:
+- Pill-style tabs with soft shadows and smooth hover states to match modern Amazon internal dashboards.
+- Card components with rounded corners and subtle hover effects.
+- Responsive grid: 4 cards per row on wide screens, 2 columns on mid-size, and 1 column on very small screens.
+ 
+Data notes:
+- Charts are placeholders and can be bound to real metrics later (e.g., ANALYTICS.logAssignment, VET/VTO).
+- Export CSV includes assignment history with Quarter.
+
+### Adjustments Upload (Swap & Time-Off Actions)
+To reflect real-time staffing changes without manual edits, you can upload an optional Adjustments CSV with columns:
+
+```
+User ID,Action,Date
+qruchikr,SWAPIN,2025-11-11
+ipanidhi,VET,2025-11-11
+sgrupind,SWAPOUT,2025-11-11
+manachha,VTO,2025-11-11
+```
+
+Supported actions:
+- SWAPIN / VET: Adds (or reactivates) the associate for the current Date; creates a synthetic row if missing in roster.
+- SWAPOUT / VTO: Removes the associate (status marked so filtered out).
+
+Processing rules:
+- Only rows matching the selected Date are applied.
+- Unknown IDs on SWAPOUT/VTO are logged as warnings.
+- Adjustment net (+adds / -removals) shown in success banner.
+- Runs prior to site/shift filtering so planned HC reflects net changes.
+
+Download the template via the “Adjustment Template” link in the roster upload section.
 ### Roster & Site Board Tabs
 Two primary views are now available:
 
