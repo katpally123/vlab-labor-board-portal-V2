@@ -124,7 +124,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const regHC = typeof window.VLAB_REGULAR_HC === 'number' ? window.VLAB_REGULAR_HC : ((window.__ROSTER_INCLUDED || []).length || 0);
         const uploaded = typeof window.VLAB_UPLOADED_LOGINS === 'number' ? window.VLAB_UPLOADED_LOGINS : 0;
         const showUploaded = !!document.getElementById('logins');
-        const uploadedHtml = showUploaded ? `<span class="ro-pill" title="Uploaded daily logins count">Uploaded Logins: <strong>${uploaded}</strong></span>` : '';
+        // Safe fallback for optional uploadedHtml content
+        const uploadedHtml = (typeof window !== 'undefined' && window.VLAB_UPLOADED_HTML)
+          ? window.VLAB_UPLOADED_HTML
+          : (showUploaded ? `<span class="ro-pill" title="Uploaded daily logins count">Uploaded Logins: <strong>${uploaded}</strong></span>` : '');
         const net = (regHC + (adj.SWAPIN||0) + (adj.VET||0) - (adj.SWAPOUT||0) - (adj.VTO||0));
         adjTarget.innerHTML = `
           <span class="ro-pill" title="Headcount before adjustments">Regular HC: <strong>${regHC}</strong></span>
@@ -133,7 +136,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <span class="ro-pill" title="Voluntary Extra Time">VET: <strong>${adj.VET||0}</strong></span>
           <span class="ro-pill" title="Voluntary Time Off">VTO: <strong>${adj.VTO||0}</strong></span>
           <span class="ro-pill" title="Regular HC adjusted by adjustments">Adjusted HC: <strong>${net}</strong></span>
-          ${uploadedHtml}
+          ${uploadedHtml || ''}
         `;
       }
     } catch(err){ console.warn('[ADJ-SUMMARY] render failed', err); }
@@ -5592,6 +5595,93 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+
+      // -------- Adjustments processing (runs AFTER roster is built) --------
+      function processAdjustments(adjustments, combinedRoster, opts = {}){
+        try{
+          if (!Array.isArray(combinedRoster)) combinedRoster = [];
+          if (!Array.isArray(adjustments) || adjustments.length === 0) {
+            return { combinedRoster, stats: { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0, added:0, removed:0, unknown:0 }, forceIds: new Set() };
+          }
+
+          const { date: resolvedDate = '', shift: resolvedShift = 'day', site: resolvedSite = 'YHM2' } = opts;
+          const normalize = (d) => String(d || '').trim().replace(/\s+/g,'');
+
+          console.log(`[ADJUST] Processing ${adjustments.length} rows against roster size ${combinedRoster.length}`);
+
+          const stats = { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0, added:0, removed:0, unknown:0 };
+          const forceIds = new Set();
+
+          // Build quick index for roster by User ID and Employee ID
+          const rosterIndex = new Map();
+          combinedRoster.forEach(r => {
+            const uid = String(r['User ID'] || r['UserID'] || r['Login'] || r['Associate'] || r['Employee Login'] || r['Handle'] || '').trim();
+            const eid = String(r['Employee ID'] || r['ID'] || r['EID'] || r['Employee Number'] || '').trim();
+            if (uid) rosterIndex.set(uid.toLowerCase(), r);
+            if (eid) rosterIndex.set(eid.toLowerCase(), r);
+          });
+
+          const todayKey = normalize(resolvedDate);
+
+          adjustments.forEach(row => {
+            const userId = String(row['User ID'] || row['UserID'] || row['Login'] || row['Associate'] || '').trim();
+            const action = String(row['Action'] || row['Type'] || '').trim().toUpperCase();
+            const dateVal = normalize(row['Date'] || row['date'] || '');
+            if (!userId || !action) { stats.unknown++; return; }
+            if (todayKey && dateVal && dateVal !== todayKey) { return; } // date mismatch
+            if (!['SWAPIN','SWAPOUT','VET','VTO'].includes(action)) { stats.unknown++; return; }
+            stats[action]++;
+
+            const key = userId.toLowerCase();
+            let existing = rosterIndex.get(key);
+
+            if (action === 'SWAPIN' || action === 'VET') {
+              forceIds.add(key);
+              if (!existing) {
+                const dbEmp = (window.DATABASE && typeof DATABASE.getEmployee==='function') ? DATABASE.getEmployee(userId) : null;
+                const synthetic = {
+                  'Employee Name': (dbEmp && dbEmp.name) || userId,
+                  'Employee ID': (dbEmp && (dbEmp.eid||dbEmp.id)) || userId,
+                  'Employee Status': 'Active',
+                  'Shift Pattern': (dbEmp && (dbEmp.shiftPattern || dbEmp.scode)) || ((resolvedShift || 'day') === 'day' ? 'DA' : 'NA'),
+                  'User ID': (dbEmp && (dbEmp.userId || dbEmp.id)) || userId,
+                  'Department ID': (dbEmp && dbEmp.departmentId) || undefined,
+                  'Management Area ID': (dbEmp && dbEmp.managementAreaId) || undefined,
+                  site: (dbEmp && dbEmp.site) || ((resolvedSite || 'YHM2') === 'YHM2' ? 'YHM2' : 'YDD_SHARED'),
+                  '_isUploaded': true,
+                  '_forceInclude': true
+                };
+                combinedRoster.push(synthetic);
+                rosterIndex.set(key, synthetic);
+                const eidKey = String(synthetic['Employee ID']||'').trim().toLowerCase();
+                if (eidKey) rosterIndex.set(eidKey, synthetic);
+                stats.added++;
+                console.log(`[ADJUST] Added synthetic entry for ${userId} via ${action}`);
+              } else {
+                existing['Employee Status'] = 'Active';
+                existing._forceInclude = true;
+                console.log(`[ADJUST] Marked existing ${userId} active via ${action}`);
+              }
+            } else if (action === 'SWAPOUT' || action === 'VTO') {
+              if (existing) {
+                existing['Employee Status'] = 'Removed'; // to be filtered out
+                stats.removed++;
+                console.log(`[ADJUST] Flagged ${userId} for removal via ${action}`);
+              } else {
+                console.warn(`[ADJUST] ${action} for user ${userId} not in roster; applying count only`);
+              }
+            }
+          });
+
+          // Remove employees flagged as Removed
+          combinedRoster = combinedRoster.filter(r => String(r['Employee Status'] ?? r.Status ?? 'Active').toLowerCase() !== 'removed');
+
+          return { combinedRoster, stats, forceIds };
+        }catch(err){
+          console.error('[ADJUST] Failed applying adjustments:', err);
+          return { combinedRoster, stats: { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0, added:0, removed:0, unknown:0 }, forceIds: new Set() };
+        }
+      }
   // small helper used for diagnostics: did parse rows exist but active filter remove them all?
   function filteredPreviewNeeded(roster, activeRows){
     return Array.isArray(roster) && roster.length > 0 && Array.isArray(activeRows) && activeRows.length === 0;
@@ -6534,86 +6624,22 @@ document.addEventListener('DOMContentLoaded', () => {
   // Process daily logins and merge with main roster
   // If roster is absent, start from an empty array; synthetic entries from adjustments will be added below.
   let combinedRoster = Array.isArray(roster) ? [...roster] : [];
-      // Apply adjustment actions before filtering (works on raw roster set)
+
+      // Apply adjustment actions AFTER roster is built
+      const adjRes = processAdjustments(adjustments, combinedRoster, { date: resolvedDate, shift: resolvedShift, site: resolvedSite });
+      combinedRoster = adjRes.combinedRoster;
+      try { window.VLAB_ADJUST_STATS = adjRes.stats; window.VLAB_ADJUST_FORCE_IDS = Array.from(adjRes.forceIds); } catch(_) {}
+      // If we are in adjustments-only mode and nothing applied for the selected date, surface a hint
       try {
-        if (Array.isArray(adjustments) && adjustments.length) {
-          console.log(`[ADJUST] Processing ${adjustments.length} adjustment rows before filtering`);
-          const stats = { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0, added:0, removed:0, unknown:0 };
-          const forceIds = new Set();
-          // Build quick index for roster by User ID / Employee ID
-          const rosterIndex = new Map();
-          combinedRoster.forEach(r => {
-            const uid = String(r['User ID'] || r['UserID'] || r['Login'] || r['Associate'] || r['Employee Login'] || r['Handle'] || '').trim();
-            const eid = String(r['Employee ID'] || r['ID'] || r['EID'] || r['Employee Number'] || '').trim();
-            if (uid) rosterIndex.set(uid.toLowerCase(), r);
-            if (eid) rosterIndex.set(eid.toLowerCase(), r);
-          });
-          const todayKey = (resolvedDate || '').trim();
-          adjustments.forEach(row => {
-            const userId = String(row['User ID'] || row['UserID'] || row['Login'] || row['Associate'] || '').trim();
-            const action = String(row['Action'] || row['Type'] || '').trim().toUpperCase();
-            const dateVal = String(row['Date'] || row['date'] || '').trim();
-            if (!userId || !action) { stats.unknown++; return; }
-            if (todayKey && dateVal && dateVal !== todayKey) { return; } // Only apply for current date
-            if (!['SWAPIN','SWAPOUT','VET','VTO'].includes(action)) { stats.unknown++; return; }
-            stats[action]++;
-            const key = userId.toLowerCase();
-            let existing = rosterIndex.get(key);
-            if (action === 'SWAPIN' || action === 'VET') {
-              forceIds.add(key);
-              if (!existing) {
-                // Try to hydrate from DATABASE by User ID (primary)
-                const dbEmp = (window.DATABASE && typeof DATABASE.getEmployee==='function') ? DATABASE.getEmployee(userId) : null;
-                // Build best-available synthetic roster row so associate appears with real details when possible
-                const synthetic = {
-                  'Employee Name': (dbEmp && dbEmp.name) || userId,
-                  'Employee ID': (dbEmp && (dbEmp.eid||dbEmp.id)) || userId,
-                  'Employee Status': 'Active',
-                  'Shift Pattern': (dbEmp && (dbEmp.shiftPattern || dbEmp.scode)) || ((resolvedShift || 'day') === 'day' ? 'DA' : 'NA'),
-                  'User ID': (dbEmp && (dbEmp.userId || dbEmp.id)) || userId,
-                  'Department ID': (dbEmp && dbEmp.departmentId) || undefined,
-                  'Management Area ID': (dbEmp && dbEmp.managementAreaId) || undefined,
-                  // Pre-classify site so it passes downstream filter
-                  site: (dbEmp && dbEmp.site) || ((resolvedSite || 'YHM2') === 'YHM2' ? 'YHM2' : 'YDD_SHARED'),
-                  '_isUploaded': true,
-                  '_forceInclude': true
-                };
-                combinedRoster.push(synthetic);
-                rosterIndex.set(key, synthetic);
-                const eidKey = String(synthetic['Employee ID']||'').trim().toLowerCase();
-                if (eidKey) rosterIndex.set(eidKey, synthetic);
-                stats.added++;
-                console.log(`[ADJUST] Added synthetic entry for ${userId} via ${action}`);
-              } else {
-                existing['Employee Status'] = 'Active';
-                console.log(`[ADJUST] Marked existing ${userId} active via ${action}`);
-              }
-            } else if (action === 'SWAPOUT' || action === 'VTO') {
-              if (existing) {
-                existing['Employee Status'] = 'Removed'; // Will be filtered out by active status check
-                stats.removed++;
-                console.log(`[ADJUST] Flagged ${userId} for removal via ${action}`);
-              } else {
-                // We still count removal in Adjusted HC; log and continue
-                console.warn(`[ADJUST] ${action} for user ${userId} not in roster; applying count only`);
-              }
-            }
-          });
-          console.log(`[ADJUST] Summary:`, stats);
-          try { window.VLAB_ADJUST_STATS = stats; window.VLAB_ADJUST_FORCE_IDS = Array.from(forceIds); }catch(_){ }
-          // If we are in adjustments-only mode and nothing applied for the selected date, surface a hint
-          try {
-            if (!rosterFile && (stats.added + stats.removed) === 0) {
-              const todayKey = (document.getElementById('date')?.value || '').trim();
-              const hadRows = Array.isArray(adjustments) && adjustments.length > 0;
-              if (hadRows) {
-                const msg = `No adjustments matched current Date ${todayKey}. Ensure the Date column matches the selected date.`;
-                TOAST && TOAST.warn ? TOAST.warn(msg) : console.warn('[ADJUST]', msg);
-              }
-            }
-          } catch(_) { }
+        if (!rosterFile && (adjRes.stats.added + adjRes.stats.removed) === 0) {
+          const todayKey = (document.getElementById('date')?.value || '').trim();
+          const hadRows = Array.isArray(adjustments) && adjustments.length > 0;
+          if (hadRows) {
+            const msg = `No adjustments matched current Date ${todayKey}. Ensure the Date column matches the selected date.`;
+            TOAST && TOAST.warn ? TOAST.warn(msg) : console.warn('[ADJUST]', msg);
+          }
         }
-      } catch(err) { console.error('[ADJUST] Failed applying adjustments:', err); }
+      } catch(_) { }
       const presentEmployeeIds = new Set(); // Track which employees are present today
       
       console.log(`[DEBUG] Initial roster size: ${combinedRoster.length}`);
@@ -6646,7 +6672,8 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log(`[DEBUG] Filtered roster from ${originalCount} to ${combinedRoster.length} present associates`);
       }
 
-      const activeRows = combinedRoster.filter(r => String(r['Employee Status'] ?? r.Status ?? '').toLowerCase() === 'active');
+  // Treat force-included rows as active regardless of status
+  const activeRows = combinedRoster.filter(r => (String(r['Employee Status'] ?? r.Status ?? '').toLowerCase() === 'active') || r._forceInclude === true);
 
       if (combinedRoster.length > 0 && filteredPreviewNeeded(combinedRoster, activeRows)){
         // if parsing succeeded but no "active" rows found, give immediate guidance
