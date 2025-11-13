@@ -80,70 +80,85 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderHeadcountOverview(){
-    // Build dataset of included associates and render compact pill summary
-    const data = buildHeadcountDataset();
-    // Populate shift code filter options (allowed codes for current date/shift)
+    const rosterOverviewContent = document.getElementById('rosterOverviewContent');
+    // 1. Populate shift code filter options
     try {
       if (rosterShiftCodeFilter) {
         const dateStr = document.getElementById('date')?.value || document.getElementById('date_roster')?.value || null;
         const shiftSel = document.querySelector('input[name="shift"]:checked')?.value || document.querySelector('input[name="shift_roster"]:checked')?.value || 'day';
-        const codes = getAllowedCodes(dateStr, shiftSel);
+        const codes = getAllowedCodes(dateStr, shiftSel) || [];
         const existing = Array.from(rosterShiftCodeFilter.options).map(o => o.value);
         const needed = [''].concat(codes);
         const changed = needed.length !== existing.length || needed.some((v,i)=> v !== existing[i]);
         if (changed) {
           rosterShiftCodeFilter.innerHTML = '<option value="">All</option>' + codes.map(c => `<option value="${c}" ${c===SHIFT_CODE_FILTER?'selected':''}>${c}</option>`).join('');
-          if (SHIFT_CODE_FILTER && !codes.includes(SHIFT_CODE_FILTER)) SHIFT_CODE_FILTER = '';
+          if (SHIFT_CODE_FILTER && !codes.includes(SHIFT_CODE_FILTER)) SHIFT_CODE_FILTER='';
         }
       }
     } catch(e){ console.warn('[SHIFT_CODE_FILTER] populate failed', e); }
-    if (rosterOverviewContent){
-      if (!data || data.length === 0){
-        rosterOverviewContent.innerHTML = '<div class="text-xs text-gray-500 italic">No active associates match current filters.</div>';
-      } else {
-        const multi = data._multiSite || { YHM2:0, YDD_CLUSTER:0 };
-        const total = (multi.YHM2||0)+(multi.YDD_CLUSTER||0);
-        rosterOverviewContent.innerHTML = `
-          <span class="ro-pill" title="Expected headcount for YHM2">YHM2 Expected HC: <strong>${multi.YHM2}</strong></span>
-          <span class="ro-pill" title="Expected headcount for YDD2 + YDD4">YDD2/YDD4 Expected HC: <strong>${multi.YDD_CLUSTER}</strong></span>
-          <span class="ro-pill" title="Total across YHM2 + YDD cluster">Total: <strong>${total}</strong></span>
-        `;
-        // Propagate site specific value to Site Board header
-        try {
-          const elPlan = document.getElementById('displayPlannedHC');
-          if (elPlan) elPlan.textContent = String(multi[STATE.currentSite==='YHM2'?'YHM2':'YDD_CLUSTER'] || total);
-          setCounts && setCounts();
-        } catch(e){ console.warn('[HEADCOUNT->BOARD] propagation failed', e); }
+
+    // 2. Build expected HC block
+    const data = buildHeadcountDataset && buildHeadcountDataset();
+    let expectedHTML='';
+    if (!data || data.length===0){
+      expectedHTML = `<div class="text-xs text-gray-500 italic">No active associates match current filters.</div>`;
+    } else {
+      let multi = data._multiSite || { YHM2:0, YDD_CLUSTER:0 };
+      let total = (multi.YHM2||0)+(multi.YDD_CLUSTER||0);
+      if (total===0){
+        const badgeCount = Object.keys(STATE.badges||{}).length;
+        const shiftTotal = parseInt((document.getElementById('shiftCodeTotal')?.textContent||'0').trim(),10);
+        const regLike = badgeCount || shiftTotal || (window.VLAB_REGULAR_HC||0);
+        if (regLike>0){
+          if (STATE.currentSite==='YHM2') multi.YHM2=regLike; else multi.YDD_CLUSTER=regLike;
+          total = regLike; multi._fallback=true;
+        }
       }
+      expectedHTML = `
+        <div class="ro-section-title">Expected Headcount</div>
+        <div class="ro-item ro-item--secondary"><label>YHM2 Expected HC</label><span>${multi.YHM2}</span></div>
+        <div class="ro-item ro-item--secondary"><label>YDD2/YDD4 Expected HC</label><span>${multi.YDD_CLUSTER}</span></div>
+        <div class="ro-item ro-item--secondary"><label>Total</label><span>${total}</span></div>
+      `;
+      try {
+        const elPlan = document.getElementById('displayPlannedHC');
+        if (elPlan) elPlan.textContent = String(multi[STATE.currentSite==='YHM2'?'YHM2':'YDD_CLUSTER'] || total);
+        setCounts && setCounts();
+      } catch(e){ console.warn('[HEADCOUNT->BOARD] propagation failed', e); }
     }
-    // Adjustments & Logins summary beside overview
+
+    // 3. Adjustments block (no Adjusted HC, no Uploaded Logins)
     try {
       const adjTarget = document.getElementById('rosterAdjSummary');
-      if (adjTarget) {
-        const adj = (window.VLAB_ADJUST_STATS || { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0 });
-        const regHC = typeof window.VLAB_REGULAR_HC === 'number' ? window.VLAB_REGULAR_HC : ((window.__ROSTER_INCLUDED || []).length || 0);
-        const uploaded = typeof window.VLAB_UPLOADED_LOGINS === 'number' ? window.VLAB_UPLOADED_LOGINS : 0;
-        const showUploaded = !!document.getElementById('logins');
-        // Safe fallback for optional uploadedHtml content
-        const uploadedHtml = (typeof window !== 'undefined' && window.VLAB_UPLOADED_HTML)
-          ? window.VLAB_UPLOADED_HTML
-          : (showUploaded ? `<span class="ro-pill" title="Uploaded daily logins count">Uploaded Logins: <strong>${uploaded}</strong></span>` : '');
-        const net = (regHC + (adj.SWAPIN||0) + (adj.VET||0) - (adj.SWAPOUT||0) - (adj.VTO||0));
-        adjTarget.innerHTML = `
-          <span class="ro-pill" title="Headcount before adjustments">Regular HC: <strong>${regHC}</strong></span>
-          <span class="ro-pill" title="Added via SWAPIN">Swap In: <strong>${adj.SWAPIN||0}</strong></span>
-          <span class="ro-pill" title="Removed via SWAPOUT">Swap Out: <strong>${adj.SWAPOUT||0}</strong></span>
-          <span class="ro-pill" title="Voluntary Extra Time">VET: <strong>${adj.VET||0}</strong></span>
-          <span class="ro-pill" title="Voluntary Time Off">VTO: <strong>${adj.VTO||0}</strong></span>
-          <span class="ro-pill" title="Regular HC adjusted by adjustments">Adjusted HC: <strong>${net}</strong></span>
-          ${uploadedHtml || ''}
-        `;
+      const adj = window.VLAB_ADJUST_STATS || { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0, LS_IN:0, LS_OUT:0 };
+      let regHC = (typeof window.VLAB_REGULAR_HC==='number') ? window.VLAB_REGULAR_HC : 0;
+      if (!regHC && window.__ROSTER_INCLUDED) regHC = window.__ROSTER_INCLUDED.length;
+      if (!regHC) regHC = Object.keys(STATE.badges||{}).length;
+      if (!regHC){
+        const scTotal = parseInt((document.getElementById('shiftCodeTotal')?.textContent||'0').trim(),10);
+        if (scTotal) regHC = scTotal;
+      }
+      const adjHTML = `
+        <div class="ro-section-title">Roster Adjustments</div>
+        <div class="ro-item"><label>Regular HC</label><span>${regHC}</span></div>
+        <div class="ro-item"><label>Swap In</label><span>${adj.SWAPIN||0}</span></div>
+        <div class="ro-item"><label>Swap Out</label><span>${adj.SWAPOUT||0}</span></div>
+        <div class="ro-item"><label>VET</label><span>${adj.VET||0}</span></div>
+        <div class="ro-item"><label>VTO</label><span>${adj.VTO||0}</span></div>
+        <div class="ro-item"><label>LS_IN</label><span>${adj.LS_IN||0}</span></div>
+        <div class="ro-item"><label>LS_OUT</label><span>${adj.LS_OUT||0}</span></div>
+      `;
+      if (rosterOverviewContent){
+        rosterOverviewContent.innerHTML = `<div class="ro-grid">${adjHTML}${expectedHTML}</div>`;
+      } else if (adjTarget){
+        adjTarget.innerHTML = `<div class="ro-grid">${adjHTML}</div>`;
       }
     } catch(err){ console.warn('[ADJ-SUMMARY] render failed', err); }
-    // Ancillary panels (always refresh even if empty to clear stale state)
-    renderShiftCodeBreakdown(window.__ROSTER_INCLUDED || []);
-    renderIncludedAssociates(window.__ROSTER_INCLUDED || []);
-    renderRosterFilterSummary(window.__ROSTER_INCLUDED || []);
+
+    // 4. Ancillary panels
+    renderShiftCodeBreakdown && renderShiftCodeBreakdown(window.__ROSTER_INCLUDED || []);
+    renderIncludedAssociates && renderIncludedAssociates(window.__ROSTER_INCLUDED || []);
+    renderRosterFilterSummary && renderRosterFilterSummary(window.__ROSTER_INCLUDED || []);
   }
 
   // --- Shift Code Breakdown ---
@@ -4776,7 +4791,9 @@ document.addEventListener('DOMContentLoaded', () => {
         'qruchikr,SWAPIN,2025-11-11',
         'ipanidhi,VET,2025-11-11',
         'sgrupind,SWAPOUT,2025-11-11',
-        'manachha,VTO,2025-11-11'
+        'manachha,VTO,2025-11-11',
+        'extworker1,LS_IN,2025-11-11',
+        'ourworker2,LS_OUT,2025-11-11'
       ].join('\n');
       const blob = new Blob([csvContent], { type: 'text/csv' });
       const url = URL.createObjectURL(blob);
@@ -5601,7 +5618,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try{
           if (!Array.isArray(combinedRoster)) combinedRoster = [];
           if (!Array.isArray(adjustments) || adjustments.length === 0) {
-            return { combinedRoster, stats: { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0, added:0, removed:0, unknown:0 }, forceIds: new Set() };
+            return { combinedRoster, stats: { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0, LS_IN:0, LS_OUT:0, added:0, removed:0, unknown:0 }, forceIds: new Set() };
           }
 
           const { date: resolvedDate = '', shift: resolvedShift = 'day', site: resolvedSite = 'YHM2' } = opts;
@@ -5609,7 +5626,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
           console.log(`[ADJUST] Processing ${adjustments.length} rows against roster size ${combinedRoster.length}`);
 
-          const stats = { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0, added:0, removed:0, unknown:0 };
+          const stats = { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0, LS_IN:0, LS_OUT:0, added:0, removed:0, unknown:0 };
           const forceIds = new Set();
 
           // Build quick index for roster by User ID and Employee ID
@@ -5629,13 +5646,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const dateVal = normalize(row['Date'] || row['date'] || '');
             if (!userId || !action) { stats.unknown++; return; }
             if (todayKey && dateVal && dateVal !== todayKey) { return; } // date mismatch
-            if (!['SWAPIN','SWAPOUT','VET','VTO'].includes(action)) { stats.unknown++; return; }
+            if (!['SWAPIN','SWAPOUT','VET','VTO','LS_IN','LS_OUT'].includes(action)) { stats.unknown++; return; }
             stats[action]++;
 
             const key = userId.toLowerCase();
             let existing = rosterIndex.get(key);
 
-            if (action === 'SWAPIN' || action === 'VET') {
+            if (action === 'SWAPIN' || action === 'VET' || action === 'LS_IN') {
               forceIds.add(key);
               if (!existing) {
                 const dbEmp = (window.DATABASE && typeof DATABASE.getEmployee==='function') ? DATABASE.getEmployee(userId) : null;
@@ -5662,7 +5679,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 existing._forceInclude = true;
                 console.log(`[ADJUST] Marked existing ${userId} active via ${action}`);
               }
-            } else if (action === 'SWAPOUT' || action === 'VTO') {
+            } else if (action === 'SWAPOUT' || action === 'VTO' || action === 'LS_OUT') {
               if (existing) {
                 existing['Employee Status'] = 'Removed'; // to be filtered out
                 stats.removed++;
@@ -5679,7 +5696,7 @@ document.addEventListener('DOMContentLoaded', () => {
           return { combinedRoster, stats, forceIds };
         }catch(err){
           console.error('[ADJUST] Failed applying adjustments:', err);
-          return { combinedRoster, stats: { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0, added:0, removed:0, unknown:0 }, forceIds: new Set() };
+          return { combinedRoster, stats: { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0, LS_IN:0, LS_OUT:0, added:0, removed:0, unknown:0 }, forceIds: new Set() };
         }
       }
   // small helper used for diagnostics: did parse rows exist but active filter remove them all?
