@@ -254,11 +254,17 @@ document.addEventListener('DOMContentLoaded', () => {
   // Check if required elements exist
   if (!form) {
     console.error('[DEBUG] Roster form element not found!');
+    console.error('[DEBUG] Available forms:', Array.from(document.forms).map(f => f.id || f.name));
     // Do not return; allow Analytics and other features to initialize without roster form
+  } else {
+    console.log('[DEBUG] Roster form found successfully:', form.id);
   }
   if (!output) {
     console.error('[DEBUG] Output element not found!');
+    console.error('[DEBUG] Available elements with id containing "output":', Array.from(document.querySelectorAll('[id*="output"]')).map(el => el.id));
     // Do not return; allow Analytics and other features to initialize without output panel
+  } else {
+    console.log('[DEBUG] Output element found successfully:', output.id);
   }
   
   console.log('[DEBUG] Form and output elements found successfully');
@@ -6395,8 +6401,18 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // submit
-  form.addEventListener('submit', (e) => {
+  if (form) {
+    form.addEventListener('submit', (e) => {
     e.preventDefault();
+    
+    console.log('[DEBUG] Form submit event triggered');
+    
+    // Check if output element exists
+    if (!output) {
+      console.error('[DEBUG] Output element not found!');
+      alert('Error: Output element not found. Please refresh the page.');
+      return;
+    }
     
     // Set flag to prevent auto-load during form processing
     isFormProcessing = true;
@@ -6404,7 +6420,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     console.log('[DEBUG] Form submission started');
     console.log('[DEBUG] Form element:', form);
-  console.log('[DEBUG] Form files - roster:', form.roster?.files, 'logins:', form.logins?.files, 'adjustments:', form.adjustments?.files);
+    console.log('[DEBUG] Form files - roster:', form.roster?.files, 'logins:', form.logins?.files, 'adjustments:', form.adjustments?.files);
     
     // Store current form state to preserve after processing
     // Controls (date/site/shift/quarter/planned volume) were relocated outside the form, so access them via document
@@ -6442,18 +6458,26 @@ document.addEventListener('DOMContentLoaded', () => {
       return; 
     }
     
-    console.log('[DEBUG] Roster file selected:', rosterFile.name, 'size:', rosterFile.size);
+    if (rosterFile) {
+      console.log('[DEBUG] Roster file selected:', rosterFile.name, 'size:', rosterFile.size);
+    } else {
+      console.log('[DEBUG] No roster file, proceeding with adjustments-only');
+    }
     
   console.log('[DEBUG] Daily logins file:', loginsFile ? `${loginsFile.name} (${loginsFile.size} bytes)` : 'None selected');
   console.log('[DEBUG] Adjustments file:', adjustmentsFile ? `${adjustmentsFile.name} (${adjustmentsFile.size} bytes)` : 'None selected');
 
     // Check if Papa Parse is available
     if (typeof Papa === 'undefined') {
-      output.textContent = 'Error: CSV parser not loaded. Please refresh the page.';
+      const errorMsg = 'Error: CSV parser not loaded. Please refresh the page and ensure internet connection.';
+      output.textContent = errorMsg;
       console.error('[DEBUG] PapaParse library not available');
+      alert(errorMsg);
+      isFormProcessing = false;
       return;
     }
 
+    console.log('[DEBUG] Papa Parse available, version:', Papa.version || 'unknown');
     console.log('[DEBUG] Starting CSV parsing...');
     console.log('[DEBUG] Files to parse:', {
       roster: rosterFile?.name,
@@ -6462,9 +6486,21 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     
     Promise.all([
-      rosterFile ? parseCsv(rosterFile).catch(err => { console.error('[DEBUG] Roster parsing error:', err); return []; }) : Promise.resolve([]),
-      loginsFile ? parseCsv(loginsFile).catch(err => { console.error('[DEBUG] Daily logins parsing error:', err); return []; }) : Promise.resolve([]),
-      adjustmentsFile ? parseCsv(adjustmentsFile).catch(err => { console.error('[DEBUG] Adjustments parsing error:', err); return []; }) : Promise.resolve([]),
+      rosterFile ? parseCsv(rosterFile).catch(err => { 
+        console.error('[DEBUG] Roster parsing error:', err); 
+        output.textContent = `Error parsing roster file: ${err.message}`;
+        return []; 
+      }) : Promise.resolve([]),
+      loginsFile ? parseCsv(loginsFile).catch(err => { 
+        console.error('[DEBUG] Daily logins parsing error:', err);
+        console.warn('[WARNING] Daily logins failed to parse, continuing without it');
+        return []; 
+      }) : Promise.resolve([]),
+      adjustmentsFile ? parseCsv(adjustmentsFile).catch(err => { 
+        console.error('[DEBUG] Adjustments parsing error:', err);
+        console.warn('[WARNING] Adjustments failed to parse, continuing without it');
+        return []; 
+      }) : Promise.resolve([]),
     ]).then(([roster, logins, adjustments]) => {
       console.debug('[build] rosterFile=', rosterFile && rosterFile.name, 'size=', rosterFile && rosterFile.size);
       console.debug('[build] parsed roster rows=', Array.isArray(roster) ? roster.length : typeof roster, roster && roster[0]);
@@ -6933,6 +6969,9 @@ document.addEventListener('DOMContentLoaded', () => {
       console.log('[FORM] Form processing failed, auto-load re-enabled');
     });
   });
+  } else {
+    console.warn('[DEBUG] Form not found, submit handler not attached');
+  }
 
 
 

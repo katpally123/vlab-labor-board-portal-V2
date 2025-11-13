@@ -71,6 +71,11 @@
                     title="Upload CSV file with employee roster data">
               <span class="ml-2 file-label" id="label-roster"></span>
             </label>
+            <label for="logins" class="pill-label" style="background:#e1f5fe; border-color:#0288d1;">Daily Logins (Optional)
+              <input type="file" id="logins" name="logins" accept=".csv" class="hidden"
+                    title="Upload CSV file with daily employee login data">
+              <span class="ml-2 file-label" id="label-logins"></span>
+            </label>
             <label for="adjustments" class="pill-label" style="background:#fef9c3; border-color:#ca8a04;">Adjustments (Optional)
               <input type="file" id="adjustments" name="adjustments" accept=".csv" class="hidden"
                     title="Upload CSV with SWAPIN/SWAPOUT/VET/VTO actions (User ID, Action, Date)">
@@ -513,6 +518,26 @@
   <!-- App logic -->
   <script src="app.js"></script>
   <script>
+    // File input label handlers
+    (function(){
+      const fileInputs = ['roster', 'logins', 'adjustments'];
+      fileInputs.forEach(name => {
+        const input = document.getElementById(name);
+        const label = document.getElementById('label-' + name);
+        if (input && label) {
+          input.addEventListener('change', (e) => {
+            const files = e.target.files;
+            if (files && files.length > 0) {
+              label.textContent = files[0].name;
+              label.style.color = '#059669';
+            } else {
+              label.textContent = '';
+            }
+          });
+        }
+      });
+    })();
+    
     // Primary nav controller (no burger)
     (function(){
       const panels = document.querySelectorAll('.tab-panel');
@@ -554,12 +579,16 @@
         try { localStorage.setItem('vlab:lastTab', target); } catch(_) {}
         activate(target);
       }));
-      // Restore last active tab from localStorage, default to siteBoard if present else roster
+      // Restore last active tab from localStorage, default to roster for easier testing
       try {
         const lastTab = localStorage.getItem('vlab:lastTab');
-        const startTab = lastTab && ['roster','siteBoard','analytics'].includes(lastTab) ? lastTab : 'siteBoard';
+        const startTab = lastTab && ['roster','siteBoard','analytics'].includes(lastTab) ? lastTab : 'roster';
+        console.log('[DEBUG] Starting with tab:', startTab);
         activate(startTab);
-      } catch(_) { activate('siteBoard'); }
+      } catch(_) { 
+        console.log('[DEBUG] Starting with default roster tab');
+        activate('roster'); 
+      }
       // Save whenever we programmatically activate too
       window.__activatePrimaryTab = function(target){
         try { localStorage.setItem('vlab:lastTab', target); } catch(_) {}
