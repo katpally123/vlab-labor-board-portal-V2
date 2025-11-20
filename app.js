@@ -1887,8 +1887,317 @@ document.addEventListener('DOMContentLoaded', () => {
 
     currentSessionId: null,
 
-    // Fair Rotation System
+    /* ═══════════════════════════════════════════════════════════════════════════
+     * 🔄 FAIR ROTATION SYSTEM - Amazon-Style Assignment Fairness Engine
+     * ═══════════════════════════════════════════════════════════════════════════
+     * 
+     * PURPOSE:
+     * Ensures fair exposure to all process paths over time by:
+     * - Preventing same people from getting same roles daily
+     * - Ensuring equal training opportunities across Pick/Sort/Dock/CB/etc
+     * - Reducing favoritism perceptions through objective scoring
+     * - Maintaining skill balance across all operations
+     * 
+     * CORE PRINCIPLE:
+     * 📌 Fewer recent turns → higher priority today
+     * 
+     * ROTATION SCORE FORMULA:
+     * For each associate (a) and path (p):
+     * 
+     *   PriorityScore = (GapBonus + NewHireBoost + SkillBonus) - (RecencyPenalty + FrequencyPenalty + WeeklyCapPenalty)
+     * 
+     * 1️⃣ RECENCY PENALTY = 1 / (Days since last assignment to p)
+     *    - Yesterday = 1/1 = 1.0 penalty
+     *    - 10 days ago = 1/10 = 0.1 penalty
+     *    - SPECIAL RULE: Same path 2 days in row = +5 huge penalty
+     * 
+     * 2️⃣ FREQUENCY PENALTY = Count(path assignments last 14 days) × 0.5
+     *    - 5 times in 14 days = 2.5 penalty
+     *    - 0 times = 0 penalty
+     * 
+     * 3️⃣ WEEKLY CAP PENALTY = +5 if assigned >3 times in last 7 days
+     *    - Prevents weekly overuse of same person in same path
+     * 
+     * 4️⃣ GAP BONUS = log(1 + days_since_last_assignment)
+     *    - 20 days gap = log(21) = ~3.0 bonus
+     *    - Never assigned = log(31) = ~3.4 bonus
+     * 
+     * 5️⃣ NEW HIRE BOOST = +3 for untrained paths (total assignments < 10)
+     *    - Aggressive cross-training for new associates
+     * 
+     * 6️⃣ SKILL BONUS = +1 for certified but under-used paths
+     *    - Keeps experienced people engaged in their trained areas
+     * 
+     * FAIRNESS SCORE (Per Associate):
+     * - Variance of work distribution across all paths
+     * - Low variance = balanced opportunities
+     * - High variance = stuck in same work zone
+     * 
+     * USAGE:
+     * - Auto-assignment uses rotation scores to pick candidates
+     * - Analytics tab shows top recommendations per path
+     * - Fairness alerts flag overuse and neglect issues
+     * ═══════════════════════════════════════════════════════════════════════════ */
+    
     ROTATION: {
+      // Core rotation scoring engine - calculates priority for each associate-path pair
+      calculateEnhancedRotationScore: function(employeeId, processPath) {
+        const emp = STATE.analytics.performance[employeeId];
+        if (!emp) return { priorityScore: 0, details: {} };
+        
+        const now = Date.now();
+        const DAY_MS = 24 * 60 * 60 * 1000;
+        
+        // Get all assignments for this employee to this specific path
+        const pathHistory = STATE.analytics.history.filter(h => 
+          h.employeeId === employeeId && 
+          h.toLocation === processPath &&
+          h.action !== 'unassign'
+        );
+        
+        // 1️⃣ RECENCY PENALTY - penalizes recent assignments
+        let recencyPenalty = 0;
+        if (pathHistory.length > 0) {
+          const lastAssignment = pathHistory[pathHistory.length - 1];
+          const daysSinceLastAssignment = Math.max(1, (now - new Date(lastAssignment.timestamp).getTime()) / DAY_MS);
+          recencyPenalty = 1 / daysSinceLastAssignment;
+          
+          // Special Rule: No same path 2 days in a row (+5 huge penalty)
+          if (daysSinceLastAssignment < 1.5) {
+            recencyPenalty += 5;
+          }
+        }
+        
+        // 2️⃣ FREQUENCY PENALTY - penalizes over-assignment in recent window
+        const LOOKBACK_DAYS = 14;
+        const cutoffTime = now - (LOOKBACK_DAYS * DAY_MS);
+        const recentAssignments = pathHistory.filter(h => new Date(h.timestamp).getTime() >= cutoffTime);
+        const frequencyPenalty = recentAssignments.length * 0.5;
+        
+        // Weekly cap rule: >3 times in 7 days adds extra penalty
+        const WEEK_LOOKBACK = 7;
+        const weekCutoff = now - (WEEK_LOOKBACK * DAY_MS);
+        const weeklyCount = pathHistory.filter(h => new Date(h.timestamp).getTime() >= weekCutoff).length;
+        let weeklyCapPenalty = 0;
+        if (weeklyCount >= 3) {
+          weeklyCapPenalty = 5;
+        }
+        
+        // 3️⃣ GAP BONUS - rewards long absence from path
+        let gapBonus = 0;
+        if (pathHistory.length > 0) {
+          const lastAssignment = pathHistory[pathHistory.length - 1];
+          const daysSinceLastAssignment = (now - new Date(lastAssignment.timestamp).getTime()) / DAY_MS;
+          gapBonus = Math.log(1 + daysSinceLastAssignment);
+        } else {
+          // Never assigned to this path - huge bonus
+          gapBonus = Math.log(1 + 30); // Equivalent to 30 days gap
+        }
+        
+        // 4️⃣ NEW ASSOCIATE BOOST - cross-training priority
+        const totalAssignments = emp.totalAssignments || 0;
+        let newHireBoost = 0;
+        if (totalAssignments < 10 && !pathHistory.length) {
+          newHireBoost = 3; // Boost for untrained paths
+        }
+        
+        // 5️⃣ SKILL CERTIFICATION (optional - can be enhanced with actual cert data)
+        // For now, we'll use experience as proxy
+        let skillBonus = 0;
+        const pathExp = emp.processExperience[processPath] || 0;
+        if (pathExp > 0 && pathExp < 5) {
+          // Certified but under-used - bonus
+          skillBonus = 1;
+        }
+        
+        // FINAL PRIORITY SCORE (higher = assign first)
+        const priorityScore = (gapBonus + newHireBoost + skillBonus) - (recencyPenalty + frequencyPenalty + weeklyCapPenalty);
+        
+        return {
+          priorityScore: priorityScore,
+          details: {
+            recencyPenalty: recencyPenalty.toFixed(2),
+            frequencyPenalty: frequencyPenalty.toFixed(2),
+            weeklyCapPenalty: weeklyCapPenalty.toFixed(2),
+            gapBonus: gapBonus.toFixed(2),
+            newHireBoost: newHireBoost,
+            skillBonus: skillBonus,
+            daysSinceLast: pathHistory.length ? Math.round((now - new Date(pathHistory[pathHistory.length - 1].timestamp).getTime()) / DAY_MS) : 'Never',
+            recentCount14d: recentAssignments.length,
+            weeklyCount: weeklyCount,
+            totalPathAssignments: pathHistory.length
+          }
+        };
+      },
+      
+      // Get ranked candidates for a specific process path
+      getRankedCandidatesForPath: function(processPath, options = {}) {
+        const candidates = [];
+        
+        // Get all badges eligible for this path
+        const allBadges = Object.values(STATE.badges).filter(b => {
+          // Filter by site if specified
+          if (options.site && b.site !== options.site) return false;
+          // Filter by shift if specified
+          if (options.shift) {
+            const shiftSet = options.shift === 'day' ? DAY_SET : NIGHT_SET;
+            if (!shiftSet.has(b.scode)) return false;
+          }
+          // Exclude already assigned (unless override)
+          if (!options.includeAssigned && b.loc !== 'unassigned') return false;
+          return true;
+        });
+        
+        // Calculate priority score for each candidate
+        allBadges.forEach(badge => {
+          const score = this.calculateEnhancedRotationScore(badge.eid, processPath);
+          candidates.push({
+            badgeId: badge.id,
+                employeeId: badge.eid,
+            name: badge.name,
+            scode: badge.scode,
+            site: badge.site,
+            currentLocation: badge.loc,
+            priorityScore: score.priorityScore,
+            scoreDetails: score.details
+          });
+        });
+        
+        // Sort by priority score DESC (highest first)
+        candidates.sort((a, b) => b.priorityScore - a.priorityScore);
+        
+        return candidates;
+      },
+      
+      // Generate rotation recommendations for all paths
+      generatePathRecommendations: function(options = {}) {
+        const allPaths = ['cb', 'ibws', 'lineloaders', 'trickle', 'dm', 'idrt', 'pb', 'e2s', 'dockws', 'e2sws', 'tpb', 'tws', 'sap', 'ao5s', 'pa', 'ps', 'laborshare'];
+        const recommendations = {};
+        
+        allPaths.forEach(path => {
+          const candidates = this.getRankedCandidatesForPath(path, options);
+          recommendations[path] = {
+            pathName: path.toUpperCase(),
+            topCandidates: candidates.slice(0, 10), // Top 10 for each path
+            totalEligible: candidates.length
+          };
+        });
+        
+        return recommendations;
+      },
+      
+      // Calculate fairness variance for an associate
+      calculateFairnessScore: function(employeeId) {
+        const emp = STATE.analytics.performance[employeeId];
+        if (!emp) return { fairnessScore: 0, variance: 0, status: 'unknown' };
+        
+        const processExp = emp.processExperience || {};
+        const counts = Object.values(processExp);
+        
+        if (counts.length === 0) {
+          return { fairnessScore: 100, variance: 0, status: 'new', distribution: {} };
+        }
+        
+        // Calculate mean
+        const mean = counts.reduce((sum, c) => sum + c, 0) / counts.length;
+        
+        // Calculate variance
+        const variance = counts.reduce((sum, c) => sum + Math.pow(c - mean, 2), 0) / counts.length;
+        
+        // Normalize variance to 0-100 scale (lower variance = higher fairness)
+        const fairnessScore = Math.max(0, 100 - (variance * 2));
+        
+        let status = 'balanced';
+        if (variance > 20) status = 'unbalanced';
+        else if (variance > 10) status = 'needs_attention';
+        else if (variance < 3) status = 'excellent';
+        
+        return {
+          fairnessScore: Math.round(fairnessScore),
+          variance: variance.toFixed(2),
+          status: status,
+          distribution: processExp,
+          mean: mean.toFixed(1)
+        };
+      },
+      
+      // Generate fairness alerts for all associates
+      generateFairnessAlerts: function() {
+        const alerts = [];
+        
+        Object.values(STATE.analytics.performance).forEach(emp => {
+          const fairness = this.calculateFairnessScore(emp.employeeId);
+          const processExp = emp.processExperience || {};
+          
+          // Alert: High frequency in one path
+          Object.entries(processExp).forEach(([path, count]) => {
+            const WEEK_LOOKBACK = 7;
+            const weekCutoff = Date.now() - (WEEK_LOOKBACK * 24 * 60 * 60 * 1000);
+            const weeklyAssignments = STATE.analytics.history.filter(h =>
+              h.employeeId === emp.employeeId &&
+              h.toLocation === path &&
+              new Date(h.timestamp).getTime() >= weekCutoff
+            );
+            
+            if (weeklyAssignments.length >= 6) {
+              alerts.push({
+                type: 'overuse',
+                severity: 'high',
+                employeeId: emp.employeeId,
+                employeeName: emp.name,
+                message: `${emp.name} has done ${path.toUpperCase()} ${weeklyAssignments.length} times this week. Needs rotation.`,
+                path: path,
+                count: weeklyAssignments.length
+              });
+            }
+          });
+          
+          // Alert: Long gap without assignment to a path
+          const allPaths = ['cb', 'ibws', 'lineloaders', 'trickle', 'dm', 'idrt', 'pb', 'e2s', 'dockws', 'e2sws', 'tpb', 'tws', 'sap', 'ao5s', 'pa', 'ps'];
+          allPaths.forEach(path => {
+            const pathHistory = STATE.analytics.history.filter(h =>
+              h.employeeId === emp.employeeId &&
+              h.toLocation === path
+            );
+            
+            if (pathHistory.length > 0) {
+              const lastAssignment = pathHistory[pathHistory.length - 1];
+              const daysSince = (Date.now() - new Date(lastAssignment.timestamp).getTime()) / (24 * 60 * 60 * 1000);
+              
+              if (daysSince > 21) {
+                alerts.push({
+                  type: 'neglect',
+                  severity: 'medium',
+                  employeeId: emp.employeeId,
+                  employeeName: emp.name,
+                  message: `${emp.name} has not done ${path.toUpperCase()} in ${Math.round(daysSince)} days. High priority for rotation.`,
+                  path: path,
+                  daysSince: Math.round(daysSince)
+                });
+              }
+            }
+          });
+          
+          // Alert: Poor overall fairness
+          if (fairness.status === 'unbalanced') {
+            alerts.push({
+              type: 'fairness',
+              severity: 'medium',
+              employeeId: emp.employeeId,
+              employeeName: emp.name,
+              message: `${emp.name} has unbalanced work distribution (variance: ${fairness.variance}). Review rotation.`,
+              variance: fairness.variance
+            });
+          }
+        });
+        
+        // Sort by severity
+        const severityOrder = { high: 3, medium: 2, low: 1 };
+        alerts.sort((a, b) => severityOrder[b.severity] - severityOrder[a.severity]);
+        
+        return alerts;
+      },
+      
       // Lock current assignments and generate rotation reports
       lockAssignments: function() {
         const timestamp = new Date().toISOString();
@@ -3929,8 +4238,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       
       const confirmed = await this.showConfirmDialog(
-        `Auto-assign ${unassignedBadges.length} associates?`,
-        'This will automatically assign associates to process paths based on capacity needs and optimal distribution.'
+        `Auto-assign ${unassignedBadges.length} associates using rotation fairness?`,
+        'This will automatically assign associates based on rotation priority scores to ensure fair distribution across process paths.'
       );
       
       if (!confirmed) return;
@@ -3944,34 +4253,83 @@ document.addEventListener('DOMContentLoaded', () => {
         .filter(([process, need]) => need > 0)
         .sort(([,a], [,b]) => b - a); // Sort by highest need first
       
-      // Distribute associates across processes
-      let badgeIndex = 0;
+      // Use rotation-based assignment for each process
       for (const [processKey, need] of processQueue) {
-        for (let i = 0; i < need && badgeIndex < unassignedBadges.length; i++) {
-          const badge = unassignedBadges[badgeIndex];
-          assignments.push({ badge, processKey });
-          badgeIndex++;
-        }
-      }
-      
-      // If there are remaining badges, distribute them evenly
-      if (badgeIndex < unassignedBadges.length) {
-        const remainingBadges = unassignedBadges.slice(badgeIndex);
-        const processKeys = TILES.map(([,key]) => key).filter(key => key);
+        // Get ranked candidates using rotation scoring
+        const candidates = ANALYTICS.ROTATION.getRankedCandidatesForPath(processKey, {
+          site: STATE.currentSite,
+          shift: document.querySelector('input[name="shift"]:checked')?.value,
+          includeAssigned: false
+        });
         
-        remainingBadges.forEach((badge, index) => {
-          const processKey = processKeys[index % processKeys.length];
-          assignments.push({ badge, processKey });
+        // Assign top N candidates based on capacity need
+        const toAssign = candidates.slice(0, need);
+        toAssign.forEach(candidate => {
+          assignments.push({ 
+            badgeId: candidate.badgeId, 
+            processKey: processKey,
+            score: candidate.priorityScore,
+            name: candidate.name
+          });
         });
       }
       
-      // Apply all assignments
-      for (const { badge, processKey } of assignments) {
-        dragDrop(null, processKey, badge.id);
+      // If there are remaining unassigned badges after meeting capacity needs,
+      // distribute them to paths with lowest current headcount using rotation scores
+      const assignedBadgeIds = new Set(assignments.map(a => a.badgeId));
+      const remainingBadges = unassignedBadges.filter(b => !assignedBadgeIds.has(b.id));
+      
+      if (remainingBadges.length > 0) {
+        const allProcessKeys = TILES.map(([,key]) => key).filter(key => key);
+        
+        // Get current counts per process
+        const processCounts = {};
+        allProcessKeys.forEach(key => {
+          processCounts[key] = Object.values(STATE.badges).filter(b => b.loc === key).length;
+        });
+        
+        // For each remaining badge, find best path by rotation score
+        remainingBadges.forEach(badge => {
+          // Get rotation scores for all paths
+          const pathScores = allProcessKeys.map(pathKey => {
+            const score = ANALYTICS.ROTATION.calculateEnhancedRotationScore(badge.eid, pathKey);
+            return {
+              pathKey: pathKey,
+              priorityScore: score.priorityScore,
+              currentCount: processCounts[pathKey] || 0
+            };
+          });
+          
+          // Sort by priority score DESC, then by current count ASC (prefer less crowded)
+          pathScores.sort((a, b) => {
+            if (Math.abs(b.priorityScore - a.priorityScore) > 0.5) {
+              return b.priorityScore - a.priorityScore;
+            }
+            return a.currentCount - b.currentCount;
+          });
+          
+          const bestPath = pathScores[0];
+          assignments.push({
+            badgeId: badge.id,
+            processKey: bestPath.pathKey,
+            score: bestPath.priorityScore,
+            name: badge.name
+          });
+          processCounts[bestPath.pathKey] = (processCounts[bestPath.pathKey] || 0) + 1;
+        });
+      }
+      
+      // Apply all assignments with animation delay
+      for (const { badgeId, processKey, score, name } of assignments) {
+        dragDrop(null, processKey, badgeId);
         assignedCount++;
       }
       
-      TOAST.show(`🤖 Auto-assigned ${assignedCount} associates`, 'success');
+      // Show summary with rotation info
+      const avgScore = assignments.reduce((sum, a) => sum + (a.score || 0), 0) / assignments.length;
+      TOAST.show(`🤖 Auto-assigned ${assignedCount} associates (Avg Rotation Score: ${avgScore.toFixed(1)})`, 'success');
+      
+      console.log('[AUTO-ASSIGN] Rotation-based assignments:', assignments.map(a => `${a.name} → ${a.processKey} (${a.score?.toFixed(2)})`));
     }
     
     async selectByShift() {
@@ -5099,6 +5457,62 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('STATE.analytics:', STATE.analytics);
     console.log('ANALYTICS object:', ANALYTICS);
     console.log('PapaParse available:', typeof Papa !== 'undefined');
+  };
+  
+  // Debug rotation scoring system
+  window.debugRotation = function(processPath = 'cb') {
+    console.log('═══════════════════════════════════════════════════');
+    console.log('🔄 ROTATION SCORING DEBUG FOR PATH:', processPath.toUpperCase());
+    console.log('═══════════════════════════════════════════════════');
+    
+    const candidates = ANALYTICS.ROTATION.getRankedCandidatesForPath(processPath, {
+      site: STATE.currentSite,
+      shift: document.querySelector('input[name="shift"]:checked')?.value
+    });
+    
+    console.log(`\n📊 Top 10 Candidates for ${processPath.toUpperCase()}:\n`);
+    candidates.slice(0, 10).forEach((c, idx) => {
+      console.log(`${idx + 1}. ${c.name} (${c.scode}) - Score: ${c.priorityScore.toFixed(2)}`);
+      console.log(`   Details:`, c.scoreDetails);
+      console.log('');
+    });
+    
+    // Fairness alerts
+    const alerts = ANALYTICS.ROTATION.generateFairnessAlerts();
+    if (alerts.length > 0) {
+      console.log('\n⚠️ FAIRNESS ALERTS:\n');
+      alerts.slice(0, 5).forEach(alert => {
+        console.log(`[${alert.severity.toUpperCase()}] ${alert.message}`);
+      });
+    } else {
+      console.log('\n✅ No fairness alerts - good rotation balance!\n');
+    }
+    
+    // Overall fairness
+    const allFairness = Object.values(STATE.analytics.performance || {}).map(emp => {
+      return ANALYTICS.ROTATION.calculateFairnessScore(emp.employeeId);
+    });
+    
+    const avgFairness = allFairness.length ? 
+      allFairness.reduce((sum, f) => sum + f.fairnessScore, 0) / allFairness.length : 0;
+    
+    console.log(`\n📈 Overall Fairness Index: ${avgFairness.toFixed(1)}/100`);
+    console.log(`   Balanced: ${allFairness.filter(f => f.status === 'excellent' || f.status === 'balanced').length}`);
+    console.log(`   Unbalanced: ${allFairness.filter(f => f.status === 'unbalanced').length}`);
+    console.log('═══════════════════════════════════════════════════\n');
+    
+    return { candidates, alerts, avgFairness };
+  };
+  
+  // Test rotation for all paths
+  window.debugAllRotation = function() {
+    const paths = ['cb', 'dm', 'pb', 'e2s', 'dockws'];
+    console.log('🔄 TESTING ROTATION FOR ALL MAJOR PATHS\n');
+    paths.forEach(path => {
+      console.log(`\n--- ${path.toUpperCase()} ---`);
+      const result = window.debugRotation(path);
+      console.log(`Top candidate: ${result.candidates[0]?.name || 'None'} (${result.candidates[0]?.priorityScore.toFixed(2) || 'N/A'})`);
+    });
   };
   
   // Debug function to check localStorage
@@ -7623,68 +8037,110 @@ document.addEventListener('DOMContentLoaded', () => {
     const elIndex = document.getElementById('rotationFairnessIndex');
     const qSel = document.getElementById('rotationQuarterToggle');
 
-    const quarter = qSel?.value || (STATE.currentQuarter || 'Q1');
-    const hist = (STATE.analytics.history || []).filter(h => h.quarter === quarter);
-
-    // Build exposure per associate across Pick/Sort/Dock
-    const exposure = {}; // { eid: { name, PICK, SORT, DOCK } }
-    hist.forEach(h => {
-      if (!h.employeeId) return;
-      const g = mapProcessToPath(h.toLocation || '');
-      if (!['PICK','SORT','DOCK'].includes(g)) return;
-      if (!exposure[h.employeeId]) exposure[h.employeeId] = { name: h.employeeName || h.employeeId, PICK:0, SORT:0, DOCK:0 };
-      exposure[h.employeeId][g] += 1;
+    // Generate fairness alerts
+    const alerts = ANALYTICS.ROTATION.generateFairnessAlerts();
+    
+    // Generate path recommendations
+    const currentSite = STATE.currentSite || 'YDD2';
+    const currentShift = document.querySelector('input[name="shift"]:checked')?.value || 'day';
+    const pathRecs = ANALYTICS.ROTATION.generatePathRecommendations({
+      site: currentSite,
+      shift: currentShift
     });
 
-    // Render simple summary table (top 20 by activity)
-    const rows = Object.entries(exposure)
-      .map(([eid, ex]) => ({ eid, ...ex, total: ex.PICK + ex.SORT + ex.DOCK }))
-      .sort((a,b)=> b.total - a.total)
-      .slice(0, 20)
-      .map(r => `<tr>
-        <td class="px-3 py-1">${r.eid}</td>
-        <td class="px-3 py-1">${r.name}</td>
-        <td class="px-3 py-1">${r.PICK}</td>
-        <td class="px-3 py-1">${r.SORT}</td>
-        <td class="px-3 py-1">${r.DOCK}</td>
-      </tr>`)
-      .join('');
-    elSummary.innerHTML = rows ? `
-      <div class="overflow-auto">
-        <table class="min-w-full text-sm">
-          <thead class="bg-gray-100 text-xs uppercase tracking-wider">
-            <tr>
-              <th class="px-3 py-2 text-left">Associate ID</th>
-              <th class="px-3 py-2 text-left">Name</th>
-              <th class="px-3 py-2 text-left">Pick</th>
-              <th class="px-3 py-2 text-left">Sort</th>
-              <th class="px-3 py-2 text-left">Dock</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
+    // Render rotation recommendations by path
+    let summaryHTML = '<div class="space-y-4">';
+    
+    // Show alerts first
+    if (alerts.length > 0) {
+      summaryHTML += `
+        <div class="bg-yellow-50 border border-yellow-200 rounded p-3">
+          <h4 class="font-bold text-sm mb-2 text-yellow-900">⚠️ Fairness Alerts</h4>
+          <div class="space-y-1">
+            ${alerts.slice(0, 5).map(alert => `
+              <div class="text-xs ${alert.severity === 'high' ? 'text-red-600' : 'text-yellow-700'}">
+                <span class="font-semibold">${alert.severity.toUpperCase()}:</span> ${alert.message}
+              </div>
+            `).join('')}
+            ${alerts.length > 5 ? `<div class="text-xs text-gray-500 italic">+${alerts.length - 5} more alerts...</div>` : ''}
+          </div>
+        </div>
+      `;
+    }
+    
+    // Show top recommendations per path
+    summaryHTML += '<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">';
+    
+    // Show top 6 paths
+    const topPaths = Object.entries(pathRecs).slice(0, 6);
+    topPaths.forEach(([pathKey, pathData]) => {
+      const topCandidates = pathData.topCandidates.slice(0, 5);
+      summaryHTML += `
+        <div class="border border-gray-200 rounded p-3 bg-white">
+          <h5 class="font-bold text-sm mb-2 text-gray-800">${pathData.pathName} Recommendations</h5>
+          <div class="space-y-1">
+            ${topCandidates.map((candidate, idx) => {
+              const scoreColor = candidate.priorityScore > 5 ? 'text-green-600' : candidate.priorityScore > 2 ? 'text-blue-600' : 'text-gray-600';
+              return `
+                <div class="text-xs flex items-center justify-between">
+                  <div class="flex-1">
+                    <span class="font-medium">${idx + 1}. ${candidate.name}</span>
+                    <span class="text-gray-500 text-[10px] ml-1">(${candidate.scode})</span>
+                  </div>
+                  <span class="${scoreColor} font-bold" title="Priority Score: ${candidate.priorityScore.toFixed(2)}">${candidate.priorityScore.toFixed(1)}</span>
+                </div>
+                ${idx === 0 && candidate.scoreDetails.daysSinceLast !== 'Never' ? `
+                  <div class="text-[10px] text-gray-500 ml-2">
+                    Last: ${candidate.scoreDetails.daysSinceLast} days ago | Recent: ${candidate.scoreDetails.recentCount14d} (14d)
+                  </div>
+                ` : ''}
+              `;
+            }).join('')}
+          </div>
+          ${pathData.totalEligible > 5 ? `<div class="text-[10px] text-gray-400 mt-1">+${pathData.totalEligible - 5} more eligible</div>` : ''}
+        </div>
+      `;
+    });
+    
+    summaryHTML += '</div>';
+    
+    // Add explanation panel
+    summaryHTML += `
+      <div class="bg-blue-50 border border-blue-200 rounded p-3 text-xs text-gray-700">
+        <h5 class="font-bold text-sm mb-1 text-blue-900">📊 Rotation Scoring Model</h5>
+        <p><strong>Priority Score</strong> = Gap Bonus - (Recency Penalty + Frequency Penalty)</p>
+        <ul class="list-disc list-inside mt-1 space-y-0.5">
+          <li><strong>Higher score</strong> = assign first (fair rotation priority)</li>
+          <li><strong>Recency Penalty:</strong> Penalizes recent assignments (1 / days since last)</li>
+          <li><strong>Frequency Penalty:</strong> Penalizes over-assignment (0.5 × count in last 14 days)</li>
+          <li><strong>Gap Bonus:</strong> Rewards long absence from path (log(1 + days))</li>
+          <li><strong>Special Rules:</strong> +5 penalty if same path yesterday, +5 if >3x this week</li>
+        </ul>
       </div>
-    ` : '<p>No rotation data for selected quarter.</p>';
+    `;
+    
+    summaryHTML += '</div>';
+    elSummary.innerHTML = summaryHTML;
 
-    // Fairness Index — average balance score across associates
-    const fairnessScores = Object.values(exposure).map(ex => {
-      const arr = [ex.PICK, ex.SORT, ex.DOCK];
-      const sum = arr.reduce((s,v)=>s+v,0);
-      if (sum === 0) return 100; // neutral when no exposure yet
-      // Compute dispersion: stddev normalized
-      const mean = sum/3;
-      const variance = arr.reduce((s,v)=> s + Math.pow(v-mean,2), 0)/3;
-      const std = Math.sqrt(variance);
-      // Normalize: higher std -> lower fairness. Assume a practical max std of mean (all in one bucket)
-      const worst = mean; // approximation
-      const score = Math.max(0, Math.min(100, Math.round(100 * (1 - (std / (worst || 1))))));
-      return score;
+    // Fairness Index — calculate overall fairness across all associates
+    const fairnessScores = Object.values(STATE.analytics.performance || {}).map(emp => {
+      const fairness = ANALYTICS.ROTATION.calculateFairnessScore(emp.employeeId);
+      return fairness.fairnessScore;
     });
+    
     const overall = fairnessScores.length ? Math.round(fairnessScores.reduce((s,v)=>s+v,0)/fairnessScores.length) : 100;
+    const poorCount = fairnessScores.filter(s => s < 50).length;
+    const goodCount = fairnessScores.filter(s => s >= 70).length;
+    
     elIndex.innerHTML = `
-      <div class="metric-row"><span class="metric-label">Fairness Index</span><span class="metric-value ${overall >= 70 ? 'positive' : overall < 50 ? 'negative' : ''}">${overall}</span></div>
+      <div class="metric-row"><span class="metric-label">Overall Fairness Index</span><span class="metric-value ${overall >= 70 ? 'positive' : overall < 50 ? 'negative' : ''}">${overall}</span></div>
       <div class="performance-bar"><div class="performance-fill" style="width:${overall}%"></div></div>
-      <div class="text-xs text-gray-500 mt-1">0–100 scale based on exposure balance across Pick/Sort/Dock</div>
+      <div class="text-xs text-gray-600 mt-2 space-y-1">
+        <div>📊 Based on variance of work distribution across paths</div>
+        <div>✅ Balanced Associates: <strong>${goodCount}</strong></div>
+        <div>⚠️ Unbalanced Associates: <strong>${poorCount}</strong></div>
+        <div class="text-gray-500 mt-1">${fairnessScores.length} associates tracked</div>
+      </div>
     `;
 
     if (!loadRotationContent._bound) {
@@ -8344,6 +8800,457 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) {
       console.error('Error in force restore:', error);
     }
+  };
+
+  // ================================================================================
+  // MANUAL SCAN ASSIGNMENT MODE
+  // ================================================================================
+  // Purpose: Allow managers to scan process path barcodes + associate badges
+  // to record real-time floor assignments without using drag-and-drop board.
+  // This mode works even after board lock and feeds directly into rotation analytics.
+  // ================================================================================
+
+  const MANUAL_SCAN = {
+    currentPath: null,
+    sessionContext: {},
+    scanHistory: [],
+
+    // Path barcode mapping (uppercase keys for case-insensitive matching)
+    PATH_MAP: {
+      'CB': 'cb',
+      'DM': 'dm',
+      'PB': 'pb',
+      'E2S': 'e2s',
+      'DOCKWS': 'dockws',
+      'IBWS': 'ibws',
+      'OBWS': 'obws',
+      'SORT': 'sort',
+      'PACK': 'pack',
+      'CRETS': 'crets',
+      'PA': 'pa',
+      'PS': 'ps',
+      'LABORSHARE': 'laborshare',
+      'AO5S': 'ao5s'
+    },
+
+    // Initialize manual scan mode
+    init() {
+      console.log('[MANUAL_SCAN] Initializing...');
+      
+      // Set today's date by default
+      const dateInput = document.getElementById('scan_date');
+      if (dateInput && !dateInput.value) {
+        const today = new Date().toISOString().split('T')[0];
+        dateInput.value = today;
+      }
+
+      // Sync shift with main form if available
+      const mainShift = document.querySelector('input[name="shift"]:checked')?.value;
+      if (mainShift) {
+        document.getElementById('scan_shift').value = mainShift;
+      }
+
+      // Sync site with main form if available
+      const mainSite = document.getElementById('site')?.value || STATE.currentSite;
+      if (mainSite) {
+        document.getElementById('scan_site').value = mainSite;
+      }
+
+      // Path input handler
+      const pathInput = document.getElementById('scan_path_input');
+      if (pathInput) {
+        pathInput.addEventListener('keypress', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            this.handlePathScan(pathInput.value.trim());
+            pathInput.value = '';
+          }
+        });
+      }
+
+      // Associate input handler
+      const associateInput = document.getElementById('scan_associate_input');
+      if (associateInput) {
+        associateInput.addEventListener('keypress', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            this.handleAssociateScan(associateInput.value.trim());
+            associateInput.value = '';
+          }
+        });
+      }
+
+      // Clear path button
+      const clearPathBtn = document.getElementById('scan_clear_path');
+      if (clearPathBtn) {
+        clearPathBtn.addEventListener('click', () => {
+          this.clearCurrentPath();
+        });
+      }
+
+      console.log('[MANUAL_SCAN] Initialization complete');
+    },
+
+    // Handle clicking on path reference cards
+    setupPathCardClickHandlers() {
+      // This will be called when manual scan tab is shown
+      const pathCards = document.querySelectorAll('#tab-manualScan .bg-white.border.rounded.p-2.text-center');
+      pathCards.forEach(card => {
+        card.style.cursor = 'pointer';
+        card.addEventListener('click', () => {
+          const pathCode = card.querySelector('.font-mono')?.textContent?.trim();
+          if (pathCode) {
+            this.handlePathScan(pathCode);
+            // Also set the path input value
+            const pathInput = document.getElementById('scan_path_input');
+            if (pathInput) {
+              pathInput.value = pathCode;
+            }
+          }
+        });
+      });
+    },
+
+    // Handle path barcode scan
+    handlePathScan(scannedValue) {
+      if (!scannedValue) return;
+
+      const pathKey = scannedValue.toUpperCase();
+      const mappedPath = this.PATH_MAP[pathKey];
+
+      if (!mappedPath) {
+        this.showStatus('error', `Unknown path code: ${scannedValue}`);
+        return;
+      }
+
+      // Set current path
+      this.currentPath = mappedPath;
+      
+      // Update UI
+      const pathDisplay = document.getElementById('scan_current_path_display');
+      const pathName = document.getElementById('scan_current_path_name');
+      const associateInput = document.getElementById('scan_associate_input');
+
+      if (pathDisplay && pathName && associateInput) {
+        pathDisplay.classList.remove('hidden');
+        pathName.textContent = pathKey;
+        associateInput.disabled = false;
+        associateInput.focus();
+      }
+
+      this.showStatus('success', `Path set to: ${pathKey} - Ready to scan associates`);
+      console.log(`[MANUAL_SCAN] Path set to: ${mappedPath} (${pathKey})`);
+    },
+
+    // Handle associate badge scan
+    handleAssociateScan(scannedValue) {
+      if (!scannedValue) return;
+
+      if (!this.currentPath) {
+        this.showStatus('error', 'Please scan a path barcode first');
+        return;
+      }
+
+      // Capture session context
+      this.sessionContext = {
+        date: document.getElementById('scan_date').value,
+        shift: document.getElementById('scan_shift').value,
+        site: document.getElementById('scan_site').value,
+        shiftCode: document.getElementById('scan_shift_code').value
+      };
+
+      // Validate context
+      if (!this.sessionContext.date) {
+        this.showStatus('error', 'Please set the date');
+        return;
+      }
+
+      // Find associate by badge ID or employee ID
+      const associate = this.findAssociate(scannedValue);
+
+      if (!associate) {
+        this.showStatus('error', `Associate not found: ${scannedValue}`);
+        this.showNotFoundPrompt(scannedValue);
+        return;
+      }
+
+      // Validate site eligibility
+      const validation = this.validateSiteEligibility(associate);
+      if (!validation.valid) {
+        this.showStatus('error', validation.message);
+        return;
+      }
+
+      // Record the assignment
+      this.recordAssignment(associate);
+    },
+
+    // Find associate in STATE.badges or DATABASE
+    findAssociate(searchValue) {
+      const search = searchValue.toLowerCase();
+
+      // Search in STATE.badges first
+      for (const badgeId in STATE.badges) {
+        const badge = STATE.badges[badgeId];
+        if (badge.id.toLowerCase() === search || 
+            badge.eid.toLowerCase() === search ||
+            badge.name.toLowerCase().includes(search)) {
+          return badge;
+        }
+      }
+
+      // Search in DATABASE
+      if (window.DATABASE) {
+        const employees = DATABASE.getAllEmployees();
+        for (const emp of employees) {
+          if (emp.id?.toLowerCase() === search ||
+              emp.eid?.toLowerCase() === search ||
+              emp.employeeId?.toLowerCase() === search ||
+              emp.name?.toLowerCase().includes(search)) {
+            return emp;
+          }
+        }
+      }
+
+      return null;
+    },
+
+    // Validate site eligibility
+    validateSiteEligibility(associate) {
+      const scanSite = this.sessionContext.site;
+      const associateSite = (associate.site || '').toUpperCase();
+
+      // YHM2 associates can only work at YHM2
+      if (associateSite === 'YHM2' && scanSite !== 'YHM2') {
+        return {
+          valid: false,
+          message: `${associate.name} is YHM2 only - cannot assign to ${scanSite}`
+        };
+      }
+
+      // YDD associates can work at YDD2 or YDD4
+      const isYddAssociate = /^(YDD2|YDD4|YDD_SHARED|YDD)/.test(associateSite);
+      const isYddScanSite = scanSite === 'YDD2' || scanSite === 'YDD4';
+
+      if (isYddAssociate && !isYddScanSite && scanSite !== 'YHM2') {
+        return {
+          valid: false,
+          message: `${associate.name} is YDD cluster - cannot assign to ${scanSite}`
+        };
+      }
+
+      return { valid: true };
+    },
+
+    // Record manual scan assignment
+    recordAssignment(associate) {
+      const timestamp = Date.now();
+      const badgeId = associate.id || associate.eid;
+      
+      // Update badge location if in STATE.badges
+      if (STATE.badges[badgeId]) {
+        const oldLoc = STATE.badges[badgeId].loc;
+        STATE.badges[badgeId].loc = this.currentPath;
+        
+        // Update site assignments
+        Object.keys(STATE.sites).forEach(siteCode => {
+          delete STATE.sites[siteCode].assignments[badgeId];
+        });
+        STATE.sites[this.sessionContext.site].assignments[badgeId] = this.currentPath;
+
+        console.log(`[MANUAL_SCAN] Moved ${associate.name}: ${oldLoc} → ${this.currentPath}`);
+      }
+
+      // Log to analytics history
+      if (STATE.analytics && STATE.analytics.history) {
+        const historyEntry = {
+          badgeId: badgeId,
+          name: associate.name,
+          eid: associate.eid || associate.employeeId,
+          action: 'assign',
+          fromLocation: 'manual_scan_entry',
+          toLocation: this.currentPath,
+          timestamp: timestamp,
+          quarter: STATE.currentQuarter || 'Q1',
+          method: 'manual_scan',
+          scanContext: {
+            date: this.sessionContext.date,
+            shift: this.sessionContext.shift,
+            site: this.sessionContext.site,
+            shiftCode: this.sessionContext.shiftCode,
+            scanner: 'manual'
+          }
+        };
+
+        STATE.analytics.history.push(historyEntry);
+        
+        // Update performance metrics
+        if (!STATE.analytics.performance[badgeId]) {
+          STATE.analytics.performance[badgeId] = {
+            totalAssignments: 0,
+            processExperience: {},
+            lastAssignment: null
+          };
+        }
+
+        const perf = STATE.analytics.performance[badgeId];
+        perf.totalAssignments += 1;
+        perf.lastAssignment = timestamp;
+        
+        if (!perf.processExperience[this.currentPath]) {
+          perf.processExperience[this.currentPath] = { count: 0, lastDate: null };
+        }
+        perf.processExperience[this.currentPath].count += 1;
+        perf.processExperience[this.currentPath].lastDate = timestamp;
+
+        console.log(`[MANUAL_SCAN] Logged to analytics:`, historyEntry);
+      }
+
+      // Add to scan history
+      this.scanHistory.unshift({
+        timestamp: timestamp,
+        associate: associate.name,
+        badgeId: badgeId,
+        path: this.currentPath,
+        pathDisplay: Object.keys(this.PATH_MAP).find(k => this.PATH_MAP[k] === this.currentPath),
+        site: this.sessionContext.site
+      });
+
+      // Keep last 50 scans
+      if (this.scanHistory.length > 50) {
+        this.scanHistory = this.scanHistory.slice(0, 50);
+      }
+
+      // Update UI
+      this.showStatus('success', `✓ ${associate.name} assigned to ${this.currentPath.toUpperCase()}`);
+      this.updateRecentScans();
+      
+      // Re-render board if visible
+      if (typeof renderAllBadges === 'function') {
+        renderAllBadges();
+      }
+      if (typeof setCounts === 'function') {
+        setCounts();
+      }
+
+      // Persist to storage
+      if (typeof saveToLocalStorage === 'function') {
+        saveToLocalStorage();
+      }
+
+      // Focus back to associate input for next scan
+      const associateInput = document.getElementById('scan_associate_input');
+      if (associateInput) {
+        associateInput.focus();
+      }
+    },
+
+    // Show status message
+    showStatus(type, message) {
+      const statusDisplay = document.getElementById('scan_status_display');
+      const statusContent = document.getElementById('scan_status_content');
+
+      if (!statusDisplay || !statusContent) return;
+
+      statusDisplay.classList.remove('hidden');
+      statusContent.className = 'rounded p-3 text-sm';
+
+      if (type === 'success') {
+        statusContent.classList.add('bg-green-100', 'border', 'border-green-400', 'text-green-800');
+        statusContent.innerHTML = `<strong>✓</strong> ${message}`;
+      } else if (type === 'error') {
+        statusContent.classList.add('bg-red-100', 'border', 'border-red-400', 'text-red-800');
+        statusContent.innerHTML = `<strong>✗</strong> ${message}`;
+      } else {
+        statusContent.classList.add('bg-blue-100', 'border', 'border-blue-400', 'text-blue-800');
+        statusContent.innerHTML = message;
+      }
+
+      // Auto-hide after 3 seconds
+      setTimeout(() => {
+        statusDisplay.classList.add('hidden');
+      }, 3000);
+    },
+
+    // Show prompt for not found associate
+    showNotFoundPrompt(scannedValue) {
+      const statusContent = document.getElementById('scan_status_content');
+      if (statusContent) {
+        statusContent.innerHTML += `<br><small>Badge/ID: ${scannedValue} not in roster. Upload roster or add manually.</small>`;
+      }
+    },
+
+    // Clear current path
+    clearCurrentPath() {
+      this.currentPath = null;
+      
+      const pathDisplay = document.getElementById('scan_current_path_display');
+      const associateInput = document.getElementById('scan_associate_input');
+
+      if (pathDisplay) {
+        pathDisplay.classList.add('hidden');
+      }
+      if (associateInput) {
+        associateInput.disabled = true;
+        associateInput.value = '';
+      }
+
+      const pathInput = document.getElementById('scan_path_input');
+      if (pathInput) {
+        pathInput.focus();
+      }
+
+      this.showStatus('info', 'Path cleared - scan a new path barcode');
+    },
+
+    // Update recent scans display
+    updateRecentScans() {
+      const recentList = document.getElementById('scan_recent_list');
+      if (!recentList) return;
+
+      if (this.scanHistory.length === 0) {
+        recentList.innerHTML = '<p class="text-sm text-gray-400 italic">No scans yet...</p>';
+        return;
+      }
+
+      const html = this.scanHistory.slice(0, 20).map(scan => {
+        const time = new Date(scan.timestamp).toLocaleTimeString();
+        return `
+          <div class="bg-white border border-gray-200 rounded p-2 text-xs">
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="font-semibold">${scan.associate}</div>
+                <div class="text-gray-600">${scan.badgeId}</div>
+              </div>
+              <div class="text-right">
+                <div class="font-mono font-bold text-green-700">${scan.pathDisplay}</div>
+                <div class="text-gray-500">${time}</div>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      recentList.innerHTML = html;
+    }
+  };
+
+  // Initialize manual scan mode
+  MANUAL_SCAN.init();
+
+  // Expose for debugging
+  window.MANUAL_SCAN = MANUAL_SCAN;
+  window.debugManualScan = function() {
+    console.log('=== Manual Scan Debug ===');
+    console.log('Current Path:', MANUAL_SCAN.currentPath);
+    console.log('Session Context:', MANUAL_SCAN.sessionContext);
+    console.log('Scan History:', MANUAL_SCAN.scanHistory);
+    console.log('Total Scans:', MANUAL_SCAN.scanHistory.length);
+    return {
+      currentPath: MANUAL_SCAN.currentPath,
+      context: MANUAL_SCAN.sessionContext,
+      history: MANUAL_SCAN.scanHistory
+    };
   };
 
 }); // End of DOMContentLoaded

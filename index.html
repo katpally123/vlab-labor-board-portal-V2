@@ -54,6 +54,7 @@
     <button class="nav-item active" data-target="roster" role="tab" aria-selected="true">📋 Roster</button>
     <button class="nav-item" data-target="siteBoard" role="tab" aria-selected="false">🧩 Site Board</button>
     <button class="nav-item" data-target="analytics" role="tab" aria-selected="false">📈 Analytics</button>
+    <button class="nav-item" data-target="manualScan" role="tab" aria-selected="false">📱 Manual Scan</button>
   </nav>
   <main class="w-full px-2 py-4">
     <!-- Legacy tab buttons removed; burger is the only navigation -->
@@ -359,6 +360,185 @@
     </div>
     </section>
 
+    <!-- MANUAL SCAN TAB CONTENT -->
+    <section id="tab-manualScan" class="tab-panel hidden" role="tabpanel" aria-labelledby="tabBtn-manualScan">
+      <div class="bg-white rounded shadow px-6 py-4 mb-4">
+        <h2 class="text-xl font-bold mb-4">📱 Manual Scan Assignment Mode</h2>
+        <p class="text-sm text-gray-600 mb-6">Scan process path barcodes followed by associate badges to record real-time floor assignments. This mode works even after the board is locked and feeds directly into rotation analytics.</p>
+        
+        <!-- Scan Session Context -->
+        <div class="bg-blue-50 border border-blue-200 rounded p-4 mb-6">
+          <h3 class="text-sm font-bold mb-3">Scan Session Settings</h3>
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div>
+              <label for="scan_date" class="block font-semibold mb-1 text-xs">Date</label>
+              <input id="scan_date" type="date" class="border rounded px-2 py-1 text-sm w-full" required />
+            </div>
+            <div>
+              <label for="scan_shift" class="block font-semibold mb-1 text-xs">Shift</label>
+              <select id="scan_shift" class="border rounded px-2 py-1 text-sm w-full" required>
+                <option value="day">Day</option>
+                <option value="night">Night</option>
+              </select>
+            </div>
+            <div>
+              <label for="scan_site" class="block font-semibold mb-1 text-xs">Site</label>
+              <select id="scan_site" class="border rounded px-2 py-1 text-sm w-full" required>
+                <option value="YDD2">YDD2</option>
+                <option value="YDD4">YDD4</option>
+                <option value="YHM2">YHM2</option>
+              </select>
+            </div>
+            <div>
+              <label for="scan_shift_code" class="block font-semibold mb-1 text-xs">Shift Code</label>
+              <select id="scan_shift_code" class="border rounded px-2 py-1 text-sm w-full" required>
+                <option value="DA">DA</option>
+                <option value="DB">DB</option>
+                <option value="DC">DC</option>
+                <option value="DL">DL</option>
+                <option value="DN">DN</option>
+                <option value="DH">DH</option>
+                <option value="NA">NA</option>
+                <option value="NB">NB</option>
+                <option value="NC">NC</option>
+                <option value="NL">NL</option>
+                <option value="NN">NN</option>
+                <option value="NH">NH</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Scanner Interface -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+          <!-- Left: Scanner Inputs -->
+          <div>
+            <div class="bg-white border-2 border-gray-300 rounded-lg p-4">
+              <h3 class="text-sm font-bold mb-4">Scanner Input</h3>
+              
+              <!-- Path Scanner -->
+              <div class="mb-4">
+                <label for="scan_path_input" class="block font-semibold mb-2 text-sm">1️⃣ Scan Process Path Barcode</label>
+                <input 
+                  id="scan_path_input" 
+                  type="text" 
+                  class="border-2 border-green-400 rounded px-3 py-2 text-lg w-full font-mono" 
+                  placeholder="Scan path barcode..." 
+                  autocomplete="off"
+                />
+                <p class="text-xs text-gray-500 mt-1">Scan or type path code (CB, DM, PB, SORT, etc.)</p>
+              </div>
+
+              <!-- Current Path Display -->
+              <div id="scan_current_path_display" class="bg-green-50 border border-green-300 rounded p-3 mb-4 hidden">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <p class="text-xs text-gray-600">Current Path:</p>
+                    <p id="scan_current_path_name" class="text-xl font-bold text-green-700">CB</p>
+                  </div>
+                  <button id="scan_clear_path" class="text-xs text-red-600 hover:underline">Clear Path</button>
+                </div>
+              </div>
+
+              <!-- Associate Scanner -->
+              <div class="mb-4">
+                <label for="scan_associate_input" class="block font-semibold mb-2 text-sm">2️⃣ Scan Associate Badge</label>
+                <input 
+                  id="scan_associate_input" 
+                  type="text" 
+                  class="border-2 border-blue-400 rounded px-3 py-2 text-lg w-full font-mono" 
+                  placeholder="Scan badge..." 
+                  autocomplete="off"
+                  disabled
+                />
+                <p class="text-xs text-gray-500 mt-1">Scan or type badge ID / Employee ID</p>
+              </div>
+
+              <!-- Last Scan Status -->
+              <div id="scan_status_display" class="hidden">
+                <div id="scan_status_content" class="rounded p-3 text-sm"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Recent Scans -->
+          <div>
+            <div class="bg-white border border-gray-300 rounded-lg p-4">
+              <h3 class="text-sm font-bold mb-3">Recent Scans</h3>
+              <div id="scan_recent_list" class="space-y-2 max-h-96 overflow-y-auto">
+                <p class="text-sm text-gray-400 italic">No scans yet...</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Path Barcode Reference Guide -->
+        <div class="bg-gray-50 border border-gray-300 rounded-lg p-4">
+          <h3 class="text-sm font-bold mb-3">📋 Process Path Barcode Reference</h3>
+          <p class="text-xs text-gray-600 mb-3">Print these barcodes and place them at each process station. Managers scan the path barcode to set the active assignment location.</p>
+          
+          <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">CB</div>
+              <div class="text-xs text-gray-600">Case Breakdown</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">DM</div>
+              <div class="text-xs text-gray-600">Decant Mez</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">PB</div>
+              <div class="text-xs text-gray-600">Pick Buffer</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">E2S</div>
+              <div class="text-xs text-gray-600">Each to Sorter</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">DOCKWS</div>
+              <div class="text-xs text-gray-600">Dock Waterspider</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">IBWS</div>
+              <div class="text-xs text-gray-600">Inbound WS</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">OBWS</div>
+              <div class="text-xs text-gray-600">Outbound WS</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">SORT</div>
+              <div class="text-xs text-gray-600">Sort</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">PACK</div>
+              <div class="text-xs text-gray-600">Pack</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">CRETS</div>
+              <div class="text-xs text-gray-600">CRETs Process</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">PA</div>
+              <div class="text-xs text-gray-600">Process Assistant</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">PS</div>
+              <div class="text-xs text-gray-600">Problem Solver</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">LABORSHARE</div>
+              <div class="text-xs text-gray-600">Labor Share</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">AO5S</div>
+              <div class="text-xs text-gray-600">AO/5S</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ANALYTICS TAB CONTENT -->
     <section id="tab-analytics" class="tab-panel hidden" role="tabpanel" aria-labelledby="tabBtn-analytics">
       <div id="analyticsEmbedTarget" class="bg-white rounded shadow px-4 py-3">
@@ -549,8 +729,8 @@
         panels.forEach(p=>{ const on = p.id === 'tab-' + target; p.classList.toggle('hidden', !on); });
   if (rosterForm){ rosterForm.classList.toggle('hidden', target !== 'roster'); }
   if (siteBoardControls){ siteBoardControls.classList.toggle('hidden', target !== 'siteBoard'); }
-        body.classList.remove('mode-roster','mode-siteBoard','mode-analytics');
-        body.classList.add(target === 'roster' ? 'mode-roster' : target === 'siteBoard' ? 'mode-siteBoard' : 'mode-analytics');
+        body.classList.remove('mode-roster','mode-siteBoard','mode-analytics','mode-manualScan');
+        body.classList.add(target === 'roster' ? 'mode-roster' : target === 'siteBoard' ? 'mode-siteBoard' : target === 'manualScan' ? 'mode-manualScan' : 'mode-analytics');
         navItems.forEach(it => {
           const active = it.dataset.target === target;
           it.classList.toggle('active', active);
@@ -569,6 +749,14 @@
             }
           } catch (e) { console.warn('Analytics activation error:', e); }
         }
+        // When switching to Manual Scan, setup path card handlers
+        if (target === 'manualScan') {
+          try {
+            if (window.MANUAL_SCAN && typeof window.MANUAL_SCAN.setupPathCardClickHandlers === 'function') {
+              setTimeout(() => window.MANUAL_SCAN.setupPathCardClickHandlers(), 50);
+            }
+          } catch (e) { console.warn('Manual Scan activation error:', e); }
+        }
         // When switching to Site Board, refresh counts/status
         if (target === 'siteBoard') {
           try { if (typeof setCounts === 'function') setCounts(); } catch(_){ }
@@ -582,7 +770,7 @@
       // Restore last active tab from localStorage, default to roster for easier testing
       try {
         const lastTab = localStorage.getItem('vlab:lastTab');
-        const startTab = lastTab && ['roster','siteBoard','analytics'].includes(lastTab) ? lastTab : 'roster';
+        const startTab = lastTab && ['roster','siteBoard','analytics','manualScan'].includes(lastTab) ? lastTab : 'roster';
         console.log('[DEBUG] Starting with tab:', startTab);
         activate(startTab);
       } catch(_) { 

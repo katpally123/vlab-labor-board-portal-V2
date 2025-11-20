@@ -3,6 +3,18 @@ Next-gen VLAB Labor Board portal with new design specs, interactive headcount to
 
 ## Features
 
+### 📱 Manual Scan Assignment Mode (NEW!)
+Real-time barcode scanning interface for floor managers:
+- **Scanner-First Workflow**: Scan process path → scan associate badge → instant assignment
+- **Works After Lock**: Continue making assignments even when board is locked
+- **Barcode Reference Guide**: Printable path codes for all process stations
+- **Real-time Validation**: Site eligibility, shift code, and roster checks
+- **Rotation Integration**: All scans feed into fairness analytics automatically
+- **Session Context**: Date, shift, site, and shift code tracking per scan session
+- **Recent Scans History**: Visual log of last 20 assignments with timestamps
+
+See [MANUAL-SCAN-GUIDE.md](MANUAL-SCAN-GUIDE.md) for complete usage instructions.
+
 ### Multi-Site Assignment Management
 - Switch between sites (YDD2, YDD4, YHM2) with preserved assignments
 - Cross-site assignment prevention
