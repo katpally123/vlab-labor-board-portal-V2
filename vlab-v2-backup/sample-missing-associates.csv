@@ -1,0 +1,5 @@
+Employee ID,User ID,Employee Name,Badge Barcode ID,Department ID,Employment Start Date,Employment Type,Employee Status,Manager Name,Management Area ID,Shift Pattern
+EMP123,user123,John Smith,BADGE001,DEPT001,2024-01-15,Full-Time,Active,Jane Manager,MGT001,DA
+EMP124,user124,Sarah Johnson,BADGE002,DEPT002,2024-02-01,Part-Time,Active,John Supervisor,MGT002,DB
+EMP125,user125,Mike Wilson,BADGE003,DEPT001,2024-01-20,Full-Time,Active,Jane Manager,MGT001,NA
+EMP126,user126,Lisa Brown,BADGE004,DEPT003,2024-03-01,Full-Time,Active,Sarah Lead,MGT003,NB

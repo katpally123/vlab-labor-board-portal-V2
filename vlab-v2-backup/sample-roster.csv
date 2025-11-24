@@ -1,0 +1,7 @@
+Employee ID,User ID,Employee Name,Badge Barcode ID,Department ID,Employment Start Date,Employment Type,Employee Status,Manager Name,Management Area ID,Shift Pattern
+110888249,qruchikr,"Ruchika,Ruchika",13966332,1299020,Wed Sep 22 00:00:00 UTC 2021,AMZN,Active,"Bhatt,Devashish",3,DA6C0700
+204374752,ipanidhi,"Patel,Nidhi",11300296,1211070,Tue Jun 10 00:00:00 UTC 2025,TEMP,Active,"Gray,Torii",22,NL6C1930
+201924098,manachha,"chhabra,manav",13518347,1299020,Wed Oct 02 00:00:00 UTC 2024,AMZN,Active,"Naresh,Malavika",3,NB1C1900
+202173133,pzdhaliw,"Dhaliwal,Parminder Singh",14835782,1211020,Wed Aug 14 00:00:00 UTC 2024,AMZN,Active,"Sobiye,Salam",3,DA5C0700
+205418374,patpriyt,"Patel,Priyank",11363240,1211070,Tue Jun 10 00:00:00 UTC 2025,TEMP,Active,"Obe,Dammy Babajide",22,DB1C0730
+205467459,sgrupind,"Singh,Rupinder Singh",15219797,1211010,Tue Jun 17 00:00:00 UTC 2025,TEMP,Active,"Harikumar,Ganesh",3,NB2C1900

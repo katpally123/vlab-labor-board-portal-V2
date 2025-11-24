@@ -1,0 +1,1478 @@
+/* Small pill labels for file inputs */
+.pill-label{
+  background:#f7f7f7; border:1px solid #d1d5db; padding:.25rem .5rem;
+  border-radius:.375rem; font-size:.75rem; font-weight:600; cursor:pointer;
+  display:flex; align-items:center;
+}
+
+/* Header band styles for the virtual board title and small blocks */
+.board-header{ border-bottom:1px solid #eef2f6; }
+.board-header-row{ padding:6px 0; }
+.board-title .main-title{ font-size:24px; font-weight:900; letter-spacing:1px; }
+.board-title .sub-title{ margin-top:4px; font-size:13px; color:rgba(15,23,42,0.6); }
+.header-blocks .header-block{ background:#fff; border:1px solid #e6e9ef; padding:8px 12px; border-radius:8px; text-align:center; min-width:96px; }
+.header-block .hb-label{ font-size:11px; color:#374151; font-weight:700; }
+.header-block .hb-value{ font-size:16px; font-weight:900; margin-top:6px; }
+.header-actions{ display:flex; align-items:center; }
+
+/* pale title band look */
+.board-header .main-title{ background: #FFF3C2; display:inline-block; padding:10px 24px; border-radius:8px; font-size:24px; font-weight:900; color:#0b1220; text-transform:uppercase; letter-spacing:1px; }
+
+/* small AM/PA blocks on left */
+.small-blocks .am-pa{ background:#f8fafc; border:1px solid #e6e9ef; padding:6px 10px; border-radius:6px; font-weight:700; color:#111827; margin-bottom:4px; text-align:center; }
+
+/* Site selector in header */
+.site-selector .hb-value{ 
+  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%); 
+  color: white; 
+  border: none; 
+  outline: none; 
+  appearance: none; 
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.site-selector .hb-value:hover{ 
+  background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%); 
+  transform: translateY(-1px);
+}
+.site-selector .hb-value:focus{ 
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3); 
+}
+
+/* Site badges in analytics */
+.site-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  color: white;
+  min-width: 40px;
+}
+
+.site-badge.site-ydd2 {
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
+}
+
+.site-badge.site-ydd4 {
+  background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+}
+
+.site-badge.site-yhm2 {
+  background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
+}
+
+.site-badge.site- {
+  background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
+}
+
+/* Analytics assignment display */
+.site-assignment-section {
+  margin-bottom: 20px;
+  padding: 15px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+.site-assignment-section h5 {
+  margin: 0 0 10px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.process-assignment {
+  margin: 8px 0;
+  padding: 8px;
+  background: white;
+  border-radius: 4px;
+  border-left: 3px solid #3b82f6;
+}
+
+.employee-name {
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  margin-right: 4px;
+}
+
+.no-assignments {
+  color: #6b7280;
+  font-style: italic;
+  margin: 10px 0;
+}
+
+.history-item .history-action .site-badge {
+  margin-right: 8px;
+}
+
+/* Make the header feel like a fixed physical header bar */
+.board-header{ position:sticky; top:0; z-index:60; background:#fff; box-shadow:0 2px 10px rgba(2,6,23,0.04); }
+
+/* Board canvas visuals */
+.board-canvas{ border:0; border-radius:8px; padding:8px; background:#fafafa; box-shadow: 0 8px 20px rgba(2,6,23,0.06); width:100%; height:82vh; overflow:auto; box-sizing:border-box; }
+.lines-header .line-labels div{ width: calc((100% - 0px) / 7); text-align:center; }
+.lines-columns{ display:flex; flex-direction:column; gap:40px; align-items:stretch; }
+.line-col{ display:flex; flex-direction:row; flex-wrap:wrap; gap:16px; align-items:flex-start; }
+.line-col .line-title{ background:#0b1220; color:#fff; padding:8px 12px; border-radius:6px; text-align:center; align-self:flex-start; min-width:120px; }
+.line-col .board-card{ border:1px solid #e6e9ef; background:#fff; border-radius:8px; padding:0; box-shadow: 0 6px 14px rgba(2,6,23,0.04); }
+.line-col .board-card .tile-header{ background:transparent; color:inherit; padding:8px; }
+.line-col .board-card .badge-layer{ max-height:220px; overflow:auto; padding:8px; }
+.empty-box{ border:1px dashed #e6e9ef; background:#fbfbfb; border-radius:6px; }
+
+/* Compact chips for the summary row */
+.chip{
+  padding:.25rem .5rem; background:#f3f4f6; border-radius:.375rem; font-size:.85rem;
+}
+
+/* Board tiles */
+.board-card{
+  border:1px solid rgba(0,0,0,0.06); background:#ffffff; border-radius:10px;
+  /* standardized workstation tile size to resemble a physical board */
+  min-width:160px; min-height:120px; width:160px; height:120px; padding:8px; display:flex; flex-direction:column; justify-content:flex-start; gap:8px;
+}
+
+/* Process cards override with larger sizes */
+.process-grid .board-card{
+  width:auto; /* Allow grid to control width */
+  height:auto; /* Allow content to control height */
+  max-height:none; /* Allow tiles to grow as needed */
+}
+.board-count{ font-weight:700; font-size:1.25rem; margin-top:1rem; }
+
+/* Tile header: label and count on same line */
+.tile-header{ display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:44px; }
+.board-count-input{ width:64px; height:36px; padding:6px 8px; border-radius:10px; border:1px solid #eef2f6; font-weight:800; text-align:center; background:#fff; box-shadow: 0 1px 0 rgba(2,6,23,0.02); }
+.board-count-input[readonly]{ background:transparent; border:none; font-weight:800; font-size:1.2rem; text-align:right; box-shadow:none; }
+
+/* Right panel: process paths */
+.proc-card{
+  border:1px solid #e5e7eb; background:#fff; border-radius:.5rem; padding:.6rem .8rem;
+  display:flex; justify-content:space-between; align-items:center; gap:8px; cursor:pointer;
+}
+.proc-card:hover{ box-shadow:0 4px 10px rgba(2,6,23,0.06); }
+.proc-count{ font-weight:800; font-size:1rem; }
+
+/* Overlapping badge strip */
+.overlap-wrap{ display:flex; align-items:flex-start; flex-wrap:nowrap; overflow-x:auto; padding:8px 6px; }
+.stack-column{ display:flex; flex-direction:column; gap:0; }
+.badge{
+  position:relative; display:flex; align-items:flex-start; gap:10px;
+  /* wider badges to better display full names */
+  width:calc(50% - 6px); height:80px; padding:10px 8px; box-sizing:border-box;
+  border-radius:8px; border:1px solid rgba(0,0,0,.04);
+  white-space:normal; overflow:visible; 
+  box-shadow:0 4px 10px rgba(2,6,23,0.04);
+  cursor:grab; opacity:1; user-select:none; background: #fff;
+  margin-bottom:6px;
+}
+.badge:first-child{ margin-left:0; }
+
+/* Avatar - smaller for compact layout */
+.badge .avatar{ width:32px; height:32px; border-radius:9999px; background:rgba(0,0,0,0.06); flex:0 0 32px; display:flex; align-items:center; justify-content:center; color:#0f172a; font-weight:800; font-size:0.75rem; margin-top:4px; }
+
+/* Info column - optimized for compact layout */
+.badge .info{ display:flex; flex-direction:column; gap:1px; flex:1 1 auto; overflow:visible; justify-content:flex-start; min-width:0; padding-top:2px; }
+.badge .info .name{ margin:0; font-size:0.95rem; line-height:1.2; font-weight:800; color:rgba(10,15,25,0.95); overflow:visible; text-overflow:clip; white-space:normal; max-width:100%; word-break:break-word; }
+.badge .info .sub{ font-size:0.68rem; color:rgba(34,34,34,0.6); }
+.badge .info .eid{ font-size:0.68rem; color:rgba(34,34,34,0.6); font-weight:600; }
+.badge .info .handle{ font-size:0.78rem; color:rgba(99,99,99,0.7); }
+
+/* avatar photo inside badge */
+.avatar-photo{ width:100%; height:100%; object-fit:cover; border-radius:9999px; display:block; }
+
+/* alias / handle below eid */
+.badge .alias{ font-size:0.78rem; color:rgba(55,65,81,0.7); font-weight:600; }
+
+/* compact barcode visuals */
+.barcode{ height:14px; border-radius:3px; background:repeating-linear-gradient(90deg, #111 0 2px, #fff 2px 6px); color:transparent; font-size:9px; padding:2px 6px; }
+.barcodeText{ font-size:10px; color:rgba(55,65,81,0.7); }
+
+/* Checkbox-style tick - smaller for compact badges */
+.badge .tick{
+  width:16px; height:16px; border-radius:4px; background:#e6f7ee; color:#059669; display:flex; align-items:center; justify-content:center;
+  font-weight:800; flex:0 0 16px; margin-left:4px; border:1px solid rgba(5,102,89,0.12);
+  position:absolute; right:4px; top:4px; font-size:10px;
+}
+
+/* Uploaded badge styling - blue border and subtle background */
+.badge.uploaded {
+  border: 2px solid #3b82f6;
+  background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%);
+  box-shadow: 0 4px 15px rgba(59, 130, 246, 0.15);
+}
+
+.badge.uploaded .name {
+  color: #1e40af;
+  font-weight: 900;
+}
+
+/* Present state border */
+.badge.present{ outline:3px solid rgba(5,150,105,0.12); }
+
+/* Prominent name and compact subtext */
+.badge .info .name{ font-size:0.95rem; font-weight:700; line-height:1.2; }
+.badge .info .sub, .badge .info .eid{ font-size:0.68rem; color:rgba(15,23,42,0.6); }
+
+/* Make process cards visually distinct */
+.proc-card{ padding:10px 12px; border-radius:10px; background:#ffffff; display:flex; justify-content:space-between; align-items:center; }
+.proc-card .proc-count{ font-weight:800; color:#111827; }
+
+/* Wider badge style when rendered inside board tiles / process cards */
+.board-card .badge, .proc-card .badge, .badge-layer .badge{
+  margin-left:0; display:inline-flex; align-items:flex-start; padding:10px 8px; 
+  width:calc(50% - 6px); height:80px; gap:10px; margin-bottom:6px;
+  min-width:unset; max-width:unset; overflow:visible; white-space:normal;
+}
+
+/* Keep larger card appearance in the unassigned stack with vertical overlap */
+#leftPanel { background: #fff; padding:12px; position:sticky; top:96px; height:calc(82vh - 24px); overflow:auto; }
+#unassignedStack { padding:8px; display:flex; flex-direction:column; align-items:flex-start; }
+#unassignedStack .badge{ display:block; width:100%; max-width:100%; margin-top:8px; border-radius:8px; box-shadow:0 6px 14px rgba(2,6,23,0.04); }
+#unassignedStack .badge:first-child{ margin-top:0; }
+#unassignedStack .badge:hover{ transform: translateX(6px); z-index: 30; }
+
+/* Unassigned overlay dropdown */
+.unassigned-overlay{
+  position:fixed; top:90px; left:20px; width:320px; max-height:70vh; background:#fff; border:1px solid #e5e7eb; border-radius:10px; box-shadow:0 10px 30px rgba(2,6,23,0.12); padding:8px; z-index:90; overflow:visible; /* let inner container scroll */
+}
+.unassigned-overlay .stack-column{ max-height:65vh; overflow:auto; }
+.leftPanel.collapsed #unassignedStack{ display:none; }
+
+/* Simple list items for unassigned overlay */
+.unassigned-item{ padding:8px 10px; border-radius:8px; border:1px solid rgba(0,0,0,0.04); margin-bottom:8px; background:#ffffff; cursor:grab; }
+.unassigned-item:active{ cursor:grabbing; }
+.unassigned-item:hover{ background:#f9fafb; }
+
+/* Show all link/button */
+.more-link{ display:block; width:100%; text-align:center; padding:8px 10px; border-radius:8px; border:1px dashed rgba(0,0,0,0.06); background:#fff; color:#374151; cursor:pointer; }
+.more-link:hover{ background:#f3f4f6; }
+
+/* name text must truncate */
+.avatar{ width:56px; height:56px; border-radius:9999px; background:rgba(0,0,0,0.06); display:flex; align-items:center; justify-content:center; font-weight:700; color:#0b1220; flex:0 0 56px; }
+
+.info{ display:flex; flex-direction:column; gap:4px; overflow:hidden; min-width:0; }
+.info .name{ font-weight:800; font-size:15px; color:rgba(10,15,25,0.95); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.info .shiftmeta{ font-size:12px; color:rgba(99,99,99,0.7); }
+.info .eid{ font-size:11px; color:rgba(99,99,99,0.6); }
+
+/* Barcode / handle area inside badge */
+.barcodeWrap{ display:flex; flex-direction:column; gap:4px; margin-top:4px; }
+.barcode{ height:18px; border-radius:4px; background:repeating-linear-gradient(90deg, #111 0 2px, #fff 2px 6px); color:transparent; font-size:10px; padding:2px 6px; }
+.barcodeText{ font-size:10px; color:rgba(55,65,81,0.7); }
+
+.badge .name{ flex:1; min-width:0; }
+
+/* path-box (tiles) should wrap badges and not overlap */
+/* Default: use a responsive grid inside each tile so badges flow side-by-side naturally.
+   The grid will expand to multiple columns when there's horizontal space; single-column
+   behavior happens automatically on narrow tiles. This produces side-by-side badges by default. */
+.path-box{
+  display:flex; flex-wrap:wrap; gap:4px; align-items:flex-start; padding:8px; border-radius:8px; overflow:auto; height:100%;
+  justify-content:flex-start; align-content:flex-start;
+}
+.path-box .badge{ width:calc(50% - 6px); height:80px; display:flex; flex-direction:row; align-items:flex-start; justify-content:flex-start; padding:10px 8px; box-sizing:border-box; border-radius:8px; border:1px solid rgba(0,0,0,0.04); background:#fff; gap:10px; margin-bottom:6px; overflow:visible; }
+.path-box .badge .info{ display:flex; flex-direction:column; flex:1; overflow:hidden; }
+.path-box .badge:hover{ transform:translateY(-1px); transition:transform 0.1s ease; }
+
+/* When a tile has many badges, switch to a compact grid so badges flow horizontally/vertically
+   instead of stretching the tile downward. JS will add/remove the `grid-mode` class per tile. */
+/* legacy grid-mode kept for backward compatibility; not required because .path-box is grid by default */
+/* (no-op) */
+.path-box .avatar{ width:40px; height:40px; flex:0 0 40px; font-size:12px; }
+.path-box .info .name{ font-size:13px; }
+.path-box .info .shiftmeta{ font-size:11px; }
+.path-box .info .eid{ font-size:11px; }
+
+/* soft pastel by shift */
+.badge[data-shift^="D"]{ background:#e7f0ff; }
+.badge[data-shift="DB"]{ background:#e7f7ea; }
+.badge[data-shift="DC"]{ background:#efe7ff; }
+.badge[data-shift="DL"]{ background:#e8f4ff; }
+.badge[data-shift="DH"]{ background:#fff2e6; }
+.badge[data-shift^="N"]{ background:#eef6ff; }
+
+/* presence tick on right edge (compact for badge cards) */
+.tick{ position:absolute; right:6px; top:6px; width:18px; height:18px; border-radius:9999px; background:#059669; color:white; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:11px; }
+
+/* hover and grab cursors */
+.badge:active{ cursor:grabbing; }
+
+/* badge-layer layout inside cards: allow specific path-box rules to control layout */
+.badge-layer{ 
+  display:flex; 
+  flex-wrap:wrap; 
+  gap:4px; 
+  padding:8px;
+  justify-content:flex-start;
+  align-content:flex-start;
+}
+
+/* Shift-code pastel backgrounds (accessible contrast for text) */
+.badge.DA, .badge.NA { background:#ddeeff; color:#0a2540; }
+.badge.DB, .badge.NB { background:#dafbe6; color:#064e3b; } /* green */
+.badge.DN, .badge.NN { background:#efe6ff; color:#4c1d95; } /* purple */
+.badge.DL, .badge.NL { background:#fff3c2; color:#6b3e00; } /* yellow */
+.badge.DC, .badge.NC { background:#ffeedc; color:#4a2b00; }
+.badge.DH, .badge.NH { background:#e2e9ee; color:#102a43; }
+
+/* Presence tick */
+.badge.present{
+  outline:2px solid #059669; /* emerald */
+  opacity:1;
+}
+.badge .tick{
+  position:absolute; right:6px; top:6px;
+  background:#059669; color:white; width:16px; height:16px;
+  display:flex; align-items:center; justify-content:center;
+  border-radius:9999px; font-size:.7rem; font-weight:800;
+}
+
+/* Utility */
+.custom-output-label { color:#ff9900; font-weight:600; }
+
+/* Headcount Overview / Adjustments list layout */
+.ro-grid {
+  display:grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap:12px; width:100%;
+}
+.ro-item {
+  background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 12px;
+  display:flex; flex-direction:column; gap:4px; min-height:72px;
+  box-shadow:0 1px 2px rgba(0,0,0,0.04);
+}
+.ro-item label { font-size:11px; font-weight:700; color:#374151; text-transform:uppercase; letter-spacing:.5px; }
+.ro-item span { font-size:18px; font-weight:800; color:#0b1220; }
+.ro-item--secondary span { font-size:16px; }
+.ro-section-title { grid-column:1 / -1; font-size:12px; font-weight:900; letter-spacing:1px; color:#111827; margin:4px 0 2px; text-transform:uppercase; }
+.ro-item.negative span { color:#b91c1c; }
+.ro-item.positive span { color:#065f46; }
+
+/* Published (assignments-only) fullscreen mode */
+/* In published mode we hide chrome but allow the board to scroll inside main so users
+  can see all assignments. Keep body overflow hidden but make `main` the scroll container. */
+body.published{ overflow:hidden; }
+/* hide chrome but keep the leftPanel visible (we show it in published mode) */
+body.published header, body.published form, body.published #fileZone, body.published .chip, body.published #codesBar, body.published #plannedVolumeStub, body.published #output { display:none !important; }
+/* Hide unassigned dropdown in published mode */
+body.published #leftPanel { display:none !important; }
+body.published main{ width:100vw; height:100vh; padding:0; margin:0; overflow:auto; -webkit-overflow-scrolling:touch; }
+body.published .grid{ grid-auto-flow:row; }
+body.published .board-card{ min-height:120px; border-radius:6px; }
+/* Allow individual tiles to scroll but give them slightly more space in published mode */
+body.published .path-box{ max-height: calc(100vh - 140px); overflow:auto; }
+
+/* Make the board canvas go edge-to-edge in published mode so it uses full browser width */
+/* Make the published board absolutely fill the viewport to avoid empty gutters */
+/* Edge and some browsers add scrollbar width to 100vw causing horizontal overflow.
+  Use left/right positioning and avoid 100vw. Ensure the root is 100% high and overflow hidden. */
+html, body { height:100%; }
+body.published{ overflow:hidden !important; }
+body.published main{ position:fixed; top:0; bottom:0; left:0; right:0; padding:0; margin:0; overflow:auto; z-index:40; -webkit-overflow-scrolling:touch; scrollbar-gutter: stable both-edges; }
+body.published .board-canvas{
+  position:relative; max-width:none !important; width:100% !important; margin:0 auto !important;
+  padding:8px !important; border-radius:0 !important; box-shadow:none !important;
+  border:none !important; height:auto !important; overflow:visible !important;
+}
+
+
+
+/* Main content should use full width when published (no left panel) */
+body.published main{ left:0; right:0; }
+
+/* Ensure the board-canvas uses the full remaining width inside main */
+body.published .board-canvas{ width:100% !important; max-width:none !important; margin-left:0 !important; }
+
+/* make sure the outer container can't cause extra width (Edge may respect margin on centered containers) */
+body.published .max-w-7xl, body.published .mx-auto, body.published .p-6{ max-width:none !important; margin:0 !important; }
+
+/* safety: prevent any element from exceeding viewport width (avoid accidental overflow) */
+body.published *{ box-sizing:border-box; max-width:100vw; }
+
+/* ensure any centered container doesn't constrain width in published mode */
+body.published .max-w-7xl, body.published .mx-auto{ max-width:none !important; margin:0 !important; }
+
+/* Reduce gaps and tighten columns to better use horizontal space in published mode */
+body.published .lines-columns{ gap:14px; }
+
+/* Optimize process grid for published mode - fit entire screen with 4 columns */
+body.published .process-grid{
+  min-height:calc(100vh - 32px) !important;
+  padding:16px !important;
+  grid-template-columns: repeat(4, 1fr) !important;
+  align-content:start;
+  gap:20px 10px !important; /* row-gap column-gap for published mode */
+  border:4px solid #1f2937 !important;
+  border-radius:12px !important;
+  margin:8px !important;
+  box-sizing:border-box !important;
+}
+
+/* Make process tiles optimized for published mode - match normal mode sizing */
+body.published .process-grid .board-card{
+  min-height:320px !important;
+  min-width:350px !important;
+}
+
+/* Primary app tabs */
+.app-tabs{ display:inline-flex; gap:6px; border:1px solid #e5e7eb; border-radius:10px; padding:4px; background:#ffffff; position:sticky; top:76px; z-index:55; }
+.tab-btn{ appearance:none; border:none; background:transparent; padding:8px 12px; border-radius:8px; font-weight:700; font-size:14px; color:#374151; cursor:pointer; }
+.tab-btn:hover{ background:#f3f4f6; }
+.tab-btn.active{ background:#111827; color:#ffffff; box-shadow:0 2px 6px rgba(0,0,0,0.08); }
+.tab-panel.hidden{ display:none; }
+/* Fallback hidden utility if Tailwind is unavailable */
+.hidden{ display:none !important; }
+
+/* Roster headcount table */
+#rosterHeadcountTable th, #rosterHeadcountTable td{ border-bottom:1px solid #e5e7eb; }
+#rosterHeadcountTable tfoot td{ border-top:2px solid #e5e7eb; }
+/* Roster Overview pills (replacing headcount summary) */
+#rosterOverviewContent{ display:flex; flex-wrap:wrap; gap:8px; }
+#rosterOverviewContent .ro-pill{ background:#f3f4f6; border:1px solid #e5e7eb; padding:6px 10px; border-radius:9999px; font-size:12px; }
+
+/* Included Associates table: fill vertical space and keep header visible */
+.roster-included-list{ max-height:52vh; min-height:280px; }
+.roster-included-list thead th{ position: sticky; top: 0; background: #f9fafb; z-index: 1; }
+.roster-included-list tbody tr:nth-child(even){ background: #fafafa; }
+.roster-included-list td, .roster-included-list th{ line-height: 1.25rem; }
+
+/* Inline smart assignment (relocated beside Planned Volume) */
+.smart-assignment-tools-inline { background:#f0f9ff; border:1px solid #bae6fd; border-radius:8px; padding:10px 12px; }
+.smart-tools-title-inline { font-size:12px; font-weight:600; color:#0369a1; margin:0 0 6px 0; }
+.smart-inline-btn { width:100%; background:linear-gradient(135deg,#0ea5e9,#0284c7); color:#fff; border:none; padding:6px 10px; border-radius:6px; font-size:12px; font-weight:500; cursor:pointer; transition:.15s; }
+.smart-inline-btn.auto { background:linear-gradient(135deg,#059669,#047857); }
+.smart-inline-btn.fill { background:linear-gradient(135deg,#7c3aed,#6d28d9); }
+.smart-inline-btn:hover { filter:brightness(1.05); transform:translateY(-1px); }
+.smart-inline-mini { flex:1; background:#e2e8f0; color:#475569; border:none; padding:4px 6px; border-radius:4px; font-size:11px; cursor:pointer; }
+.smart-inline-mini.warn { background:#f59e0b; color:#fff; }
+.smart-inline-mini:hover { background:#cbd5e1; }
+.smart-inline-input { padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:11px; text-align:center; }
+.smart-inline-select { padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:11px; background:#fff; }
+
+/* Roster tab - filters summary */
+.roster-filters{ display:flex; align-items:center; gap:10px; }
+.rf-title{ font-size:12px; font-weight:800; color:#374151; text-transform:uppercase; letter-spacing:.04em; }
+.rf-chips{ display:flex; flex-wrap:wrap; gap:6px; }
+.rf-chips .chip{ background:#f8fafc; }
+/* Roster shift code dropdown */
+#rosterShiftCodeFilter{ min-width:90px; }
+
+/* Included associates list */
+.roster-included-list{ max-height:240px; overflow:auto; border:1px solid #e5e7eb; background:#fff; border-radius:8px; padding:8px; }
+.roster-included-list .inc-item{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 8px; border-bottom:1px solid #f1f5f9; font-size:13px; }
+.roster-included-list .inc-item:last-child{ border-bottom:none; }
+.inc-name{ font-weight:700; color:#111827; }
+.inc-meta{ font-size:12px; color:#6b7280; }
+
+/* Primary nav (replaces burger) */
+.primary-nav{
+  display:flex; gap:12px; align-items:center; padding:8px 10px; margin:6px 12px; position:sticky; top:68px; z-index:55;
+  background:#fff; border:1px solid #e5e7eb; border-radius:12px; box-shadow:0 8px 18px rgba(2,6,23,0.06);
+}
+.nav-item{ appearance:none; border:none; background:#f3f4f6; color:#111827; padding:8px 14px; border-radius:10px; font-weight:800; cursor:pointer; }
+.nav-item:hover{ background:#e5e7eb; }
+.nav-item.active{ background:#111827; color:#ffffff; box-shadow:0 2px 6px rgba(0,0,0,0.08); }
+
+/* Mode-specific calming layouts */
+/* Hide forms per mode */
+body.mode-siteBoard #rosterForm{ display:none !important; }
+body.mode-analytics #rosterForm{ display:none !important; }
+body.mode-roster #siteBoardControls{ display:none !important; }
+body.mode-analytics #siteBoardControls{ display:none !important; }
+/* Header action visibility per mode */
+body.mode-roster .show-board, body.mode-roster .show-analytics{ display:none !important; }
+body.mode-siteBoard .show-analytics{ display:none !important; }
+body.mode-analytics .show-board{ display:none !important; }
+
+/* Floating Settings button */
+#settingsBtn.floating-settings{
+  position:fixed; top:10px; right:10px; z-index:75;
+  background:#ffffff; border:1px solid #d1d5db; border-radius:8px; padding:6px 12px; font-size:12px; font-weight:600; box-shadow:0 4px 14px rgba(2,6,23,0.12);
+}
+#settingsBtn.floating-settings:hover{ background:#f3f4f6; }
+
+/* Analytics embed adjustments */
+#tab-analytics .analytics-modal-content{ width:auto; max-width:none; max-height:none; position:static; transform:none; border:1px solid #e5e7eb; border-radius:12px; box-shadow:none; }
+#tab-analytics .analytics-modal-content .analytics-header{ background:#f9fafb; color:#111827; }
+
+/* Ensure badge layers in published mode show two badges like normal mode */
+body.published .process-grid .badge-layer{
+  min-height:200px !important;
+  max-height:220px !important;
+  overflow-y:hidden !important;
+  padding:12px !important;
+  gap:8px !important;
+}
+
+/* Ensure badges in published mode are properly sized */
+body.published .process-grid .badge-layer .badge{
+  width:calc(50% - 6px) !important;
+  height:80px !important;
+  padding:10px 8px !important;
+  margin-bottom:6px !important;
+}
+body.published .line-col{ min-width:128px; }
+body.published .line-row .board-card{ min-height:160px; }
+
+/* Slightly stronger card shadows and subtle color tweaks for polish */
+.board-card{ box-shadow: 0 8px 22px rgba(2,6,23,0.04); }
+.board-card:hover{ transform: translateY(-2px); transition: transform 120ms ease; }
+
+
+
+/* Slightly tighter tile header spacing */
+.tile-header{ gap:10px; }
+
+
+/* Floating Exit Publish button when in published mode */
+#exitPublishBtn{ position:fixed; right:18px; top:18px; z-index:80; }
+
+/* Print-friendly: hide controls when printing */
+@media print{
+  header, form, #leftPanel, #fileZone, #exportLogBtn, #publishBtn { display:none !important; }
+}
+
+/* Responsive board grid that lets each tile size to content and wrap on small screens */
+.board-grid{
+  display:flex;
+  flex-direction:column;
+  gap:1rem;
+}
+
+.process-grid{
+  display:grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap:24px 12px; /* row-gap column-gap */
+  align-items:start;
+  border:6px solid #1f2937;
+  border-radius:16px;
+  padding:24px;
+  background:#f8fafc;
+  margin:8px;
+  box-sizing:border-box;
+}
+
+
+.line-row .tile-header .font-semibold{ font-weight:800; text-transform:uppercase; letter-spacing:0.4px; }
+.line-row .tile-header .board-count-input{ background:transparent; border:1px solid rgba(255,255,255,0.08); color:#fff; box-shadow:none; }
+
+/* WS cards should be taller to hold 2-4 badges */
+.line-row .board-card{ min-height:220px; padding:0; }
+.line-row .board-card .badge-layer{ padding:10px; }
+
+/* Process tiles - taller to show two badges comfortably */
+.process-grid .tile-header{ background:#1f2937; color:#ffffff; padding:14px 18px; border-radius:8px; font-weight:700; font-size:1.1rem; }
+.process-grid .board-card{ 
+  min-height:320px; 
+  min-width:350px;
+  border:3px solid #374151; 
+  border-radius:12px;
+  background:#ffffff;
+  box-shadow: 0 8px 24px rgba(2,6,23,0.12);
+}
+.process-grid .board-count-input{
+  width:80px;
+  height:44px;
+  font-size:1.1rem;
+  font-weight:800;
+  border:2px solid #374151;
+  border-radius:8px;
+  background:#ffffff; /* stronger contrast on dark header */
+  color:#111827;      /* ensure digits are clearly visible */
+}
+
+/* Process grid badges - sized to show exactly two badges */
+.process-grid .badge-layer{
+  min-height:200px;
+  max-height:360px; /* allow more than ~4 badges to be visible */
+  overflow-y:auto;  /* scroll within tile when content exceeds max-height */
+  display:flex !important;
+  flex-wrap:wrap !important;
+  gap:8px !important;
+  padding:12px !important;
+  align-content:flex-start !important;
+}
+
+.process-grid .badge-layer .badge{
+  width:calc(50% - 4px) !important;
+  height:80px !important;
+  margin-right:0 !important;
+  margin-bottom:6px !important;
+  min-width:unset !important;
+  max-width:unset !important;
+  display:flex !important;
+  flex-direction:row !important;
+  align-items:flex-start !important;
+  padding:10px 8px !important;
+}
+
+/* subtle grid line separating lines for readability */
+.line-row + .line-row{ border-top:1px solid #f1f5f9; padding-top:12px; }
+
+/* Additional WS styling overrides for closer physical-board parity */
+.board-canvas{
+  border-color: #e2e8f0; /* slightly stronger frame */
+  box-shadow: 0 6px 18px rgba(2,6,23,0.06);
+}
+
+.line-col{ min-width:150px; /* tighten columns for denser layout */ }
+
+.line-row .board-card{
+  border:1px solid rgba(13,20,33,0.06);
+  background: linear-gradient(180deg,#ffffff,#fbfdff);
+  border-radius:10px;
+  overflow:hidden;
+}
+
+.line-row .tile-header{ padding:10px 12px; display:flex; align-items:center; justify-content:space-between; }
+.line-row .tile-header .font-semibold{ font-size:13px; }
+
+/* small WS number badge in the header (positioned left) */
+
+
+/* focus ring for keyboard users on badges */
+.badge:focus{ outline:3px solid rgba(59,130,246,0.25); box-shadow:0 4px 14px rgba(59,130,246,0.08); }
+
+/* slightly more compact badge inside tiles to fit more per-row */
+.path-box .badge{ height:60px; padding:6px 8px; gap:8px; }
+
+/* ensure avatar photos are crisp and clipped */
+.avatar-photo{ border-radius:9999px; width:100%; height:100%; object-fit:cover; display:block; }
+
+/* keep presence tick clearly visible on badges in tiles */
+.badge .tick{ right:8px; top:8px; }
+
+/* Rotation status indicators */
+.rotation-indicator {
+  position: absolute !important;
+  bottom: 4px !important;
+  left: 4px !important;
+  font-size: 10px !important;
+  background: white !important;
+  border-radius: 50% !important;
+  width: 16px !important;
+  height: 16px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2) !important;
+  z-index: 10 !important;
+  cursor: help !important;
+}
+
+/* Analytics Dashboard Styles */
+.analytics-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.analytics-modal.hidden {
+  display: none;
+}
+
+.analytics-modal-content {
+  background: white;
+  border-radius: 12px;
+  width: 95vw;
+  height: 90vh;
+  max-width: 1200px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+}
+
+.analytics-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+
+/* Fixed analytics layout (clean and responsive) */
+.analytics-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 6px;
+}
+
+.analytics-tab {
+  padding: 8px 12px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  color: #374151;
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.analytics-tab.active {
+  background: #eef2ff;
+  color: #3730a3;
+  border-color: #c7d2fe;
+}
+
+.analytics-tab:hover {
+  background: #f3f4f6;
+}
+
+.analytics-tab-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.analytics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.analytics-card {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 16px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+
+.analytics-card.full-width {
+  grid-column: 1 / -1;
+}
+
+.analytics-card h3 {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  color: #111827;
+}
+
+.analytics-content {
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.45;
+}
+
+
+.analytics-footer {
+  display: flex;
+  gap: 12px;
+  padding: 20px 24px;
+  background: #f9fafb;
+  border-top: 1px solid #e5e7eb;
+  justify-content: flex-end;
+}
+
+/* Analytics search */
+.analytics-search {
+  padding: 12px 16px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #ffffff;
+}
+.analytics-search-input {
+  width: 100%;
+  outline: none;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+.analytics-search-results {
+  margin-top: 10px;
+  background: #fafafa;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px;
+}
+.analytics-search-results .results-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: #374151;
+  margin-bottom: 6px;
+}
+.analytics-search-results table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.analytics-search-results thead th {
+  position: sticky;
+  top: 0;
+  background: #f3f4f6;
+  color: #111827;
+  text-align: left;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 6px;
+}
+.analytics-search-results tbody td {
+  border-bottom: 1px solid #f3f4f6;
+  padding: 6px;
+  color: #374151;
+}
+.analytics-search-results .muted {
+  color: #6b7280;
+}
+
+/* Analytics data display styles */
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.metric-row:last-child {
+  border-bottom: none;
+}
+
+.metric-label {
+  font-weight: 500;
+  color: #374151;
+}
+
+.metric-value {
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.metric-value.positive {
+  color: #059669;
+}
+
+.metric-value.negative {
+  color: #dc2626;
+}
+
+.performance-bar {
+  width: 100%;
+  height: 8px;
+  background: #e5e7eb;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 4px 0;
+}
+
+.performance-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #ef4444 0%, #f59e0b 50%, #10b981 100%);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.recommendation-item {
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 6px;
+  padding: 12px;
+  margin: 8px 0;
+}
+
+.recommendation-header {
+  font-weight: 600;
+  color: #0369a1;
+  margin-bottom: 4px;
+}
+
+.recommendation-reason {
+  font-size: 12px;
+  color: #0284c7;
+}
+
+.history-item {
+  background: #fafafa;
+  border-radius: 6px;
+  padding: 12px;
+  margin: 8px 0;
+  border-left: 4px solid #3b82f6;
+}
+
+.history-timestamp {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 4px;
+}
+
+.history-action {
+  font-weight: 500;
+  color: #1f2937;
+}
+
+.insight-item {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 12px 0;
+  border-left: 4px solid #f59e0b;
+}
+
+.insight-title {
+  font-weight: 600;
+  color: #92400e;
+  margin-bottom: 6px;
+}
+
+.insight-description {
+  color: #b45309;
+  font-size: 14px;
+}
+
+/* Responsive adjustments for smaller screens */
+@media (max-width: 768px) {
+  .analytics-modal-content {
+    width: 98vw;
+    height: 95vh;
+    margin: 2vh 1vw;
+  }
+  
+  .analytics-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .analytics-tabs {
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  
+  .analytics-tab {
+    flex-shrink: 0;
+    min-width: 120px;
+  }
+}
+
+/* Responsive columns for analytics cards */
+@media (min-width: 768px) {
+  .analytics-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (min-width: 1280px) {
+  .analytics-grid { grid-template-columns: repeat(4, 1fr); }
+}
+
+/* Toast Notification System */
+.toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 10000;
+  max-width: 400px;
+}
+
+.toast {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border-left: 4px solid #059669;
+  padding: 16px;
+  margin-bottom: 12px;
+  transform: translateX(100%);
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toast.show {
+  transform: translateX(0);
+}
+
+.toast.success {
+  border-left-color: #059669;
+}
+
+.toast.error {
+  border-left-color: #dc2626;
+}
+
+.toast.warning {
+  border-left-color: #f59e0b;
+}
+
+.toast.info {
+  border-left-color: #3b82f6;
+}
+
+.toast-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.toast-content {
+  flex: 1;
+}
+
+.toast-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+  color: #111827;
+}
+
+.toast-message {
+  color: #6b7280;
+  font-size: 14px;
+}
+
+.toast-close {
+  background: none;
+  border: none;
+  font-size: 18px;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.toast-close:hover {
+  color: #6b7280;
+}
+
+/* Multi-select and bulk assignment styles */
+.bulk-actions {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+  display: none;
+}
+
+.bulk-actions.show {
+  display: block;
+}
+
+.bulk-actions-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.bulk-action-btn {
+  background: #3b82f6;
+  color: white;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.bulk-action-btn:hover {
+  background: #2563eb;
+}
+
+.bulk-action-btn.danger {
+  background: #dc2626;
+}
+
+.bulk-action-btn.danger:hover {
+  background: #b91c1c;
+}
+
+.selected-count {
+  font-weight: 600;
+  color: #374151;
+}
+
+/* Badge selection styles */
+.badge.selected {
+  outline: 2px solid #3b82f6;
+  outline-offset: 1px;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+}
+
+.badge input[type="checkbox"] {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 14px;
+  height: 14px;
+  accent-color: #3b82f6;
+  z-index: 2;
+}
+
+/* Smart Assignment Tools */
+.smart-assignment-tools {
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+
+.smart-tools-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0369a1;
+  margin: 0 0 12px 0;
+  border-bottom: 1px solid #bae6fd;
+  padding-bottom: 6px;
+}
+
+.smart-tool-group {
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e0f2fe;
+}
+
+.smart-tool-group:last-child {
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
+.smart-tool-btn {
+  width: 100%;
+  background: linear-gradient(135deg, #0ea5e9, #0284c7);
+  color: white;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-bottom: 4px;
+}
+
+.smart-tool-btn:hover {
+  background: linear-gradient(135deg, #0284c7, #0369a1);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(14, 165, 233, 0.3);
+}
+
+.smart-tool-btn.auto-assign {
+  background: linear-gradient(135deg, #059669, #047857);
+}
+
+.smart-tool-btn.auto-assign:hover {
+  background: linear-gradient(135deg, #047857, #065f46);
+}
+
+.smart-tool-btn.fill-capacity {
+  background: linear-gradient(135deg, #7c3aed, #6d28d9);
+}
+
+.smart-tool-btn.fill-capacity:hover {
+  background: linear-gradient(135deg, #6d28d9, #5b21b6);
+}
+
+.smart-tool-desc {
+  font-size: 10px;
+  color: #475569;
+  margin: 0;
+  line-height: 1.3;
+}
+
+.smart-tool-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #334155;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.quick-select-buttons {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.quick-select-btn {
+  background: #e2e8f0;
+  color: #475569;
+  border: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex: 1;
+  min-width: 0;
+}
+
+.quick-select-btn:hover {
+  background: #cbd5e1;
+  color: #334155;
+}
+
+.rapid-assign-grid {
+  display: grid;
+  grid-template-columns: 60px 1fr auto;
+  gap: 4px;
+  align-items: center;
+}
+
+.rapid-count-input {
+  padding: 4px 6px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: 11px;
+  text-align: center;
+}
+
+.rapid-target-select {
+  padding: 4px 6px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: 11px;
+  background: white;
+}
+
+.rapid-assign-btn {
+  background: #f59e0b;
+  color: white;
+  border: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  cursor: pointer;
+  transition: background 0.2s;
+  white-space: nowrap;
+}
+
+.rapid-assign-btn:hover {
+  background: #d97706;
+}
+
+/* Filter controls */
+.filter-controls {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+
+.filter-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.filter-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #374151;
+  text-transform: uppercase;
+}
+
+.filter-input {
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: 13px;
+  min-width: 120px;
+}
+
+.filter-clear {
+  background: #6b7280;
+  color: white;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.filter-clear:hover {
+  background: #4b5563;
+}
+
+/* Process path capacity indicators */
+.capacity-indicator {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.capacity-indicator.over-capacity {
+  background: #dc2626;
+}
+
+.capacity-indicator.under-capacity {
+  background: #f59e0b;
+}
+
+.capacity-indicator.optimal {
+  background: #059669;
+}
+
+.capacity-indicator .capacity-icon {
+  font-size: 10px;
+}
+
+/* ========================================
+   MANUAL SCAN MODE STYLES
+   ======================================== */
+
+/* Scanner input fields with visual distinction */
+#scan_path_input {
+  border-width: 2px;
+  border-color: #10b981;
+  transition: all 0.2s ease;
+}
+
+#scan_path_input:focus {
+  outline: none;
+  border-color: #059669;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+}
+
+#scan_associate_input {
+  border-width: 2px;
+  border-color: #3b82f6;
+  transition: all 0.2s ease;
+}
+
+#scan_associate_input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+#scan_associate_input:disabled {
+  background: #f3f4f6;
+  border-color: #d1d5db;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* Current path display with pulsing animation */
+#scan_current_path_display {
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Status messages */
+#scan_status_display {
+  animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Recent scans list */
+#scan_recent_list > div {
+  transition: all 0.2s ease;
+}
+
+#scan_recent_list > div:hover {
+  background: #f9fafb;
+  transform: translateX(2px);
+}
+
+/* Path barcode reference cards */
+.bg-white.border.rounded.p-2.text-center {
+  transition: all 0.2s ease;
+}
+
+.bg-white.border.rounded.p-2.text-center:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  border-color: #3b82f6;
+  cursor: pointer;
+}
+
+/* Scanner session settings */
+#scan_date,
+#scan_shift,
+#scan_site,
+#scan_shift_code {
+  transition: all 0.2s ease;
+}
+
+#scan_date:focus,
+#scan_shift:focus,
+#scan_site:focus,
+#scan_shift_code:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+
+/* Scan history timestamp styling */
+#scan_recent_list .text-gray-500 {
+  font-size: 10px;
+  font-family: 'Courier New', monospace;
+}
+
+/* Success/error status indicators */
+.bg-green-100 {
+  animation: pulse 0.5s ease-in-out;
+}
+
+.bg-red-100 {
+  animation: shake 0.5s ease-in-out;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.8; }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-5px); }
+  75% { transform: translateX(5px); }
+}
+
+

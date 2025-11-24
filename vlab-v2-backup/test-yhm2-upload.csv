@@ -1,0 +1,4 @@
+Employee ID	User ID	Employee Name	Badge Barcode ID	Department ID	Employment Start Date	Employment Type	Employee Status	Manager Name	Management Area ID	Shift Pattern
+110888249	testuser1	Test,User1	13966332	1299020	Wed Sep 22 00:00:00 UTC 2021	AMZN	Active	Test,Manager	1	DA
+110888250	testuser2	Test,User2	13966333	1299010	Mon Jan 15 00:00:00 UTC 2024	AMZN	Active	Test,Manager	1	DB
+110888251	testuser3	Test,User3	13966334	1211020	Fri Mar 08 00:00:00 UTC 2024	AMZN	Active	Test,Manager	1	DA
