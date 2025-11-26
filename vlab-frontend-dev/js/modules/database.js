@@ -111,7 +111,10 @@ class RosterDatabase {
       departmentId: employee.departmentId,
       managementAreaId: employee.managementAreaId,
       shiftPattern: employee.shiftPattern,
-      addedDate: employee.addedDate || new Date().toISOString()
+      addedDate: employee.addedDate || new Date().toISOString(),
+      _forceInclude: employee._forceInclude,
+      _adjustmentDate: employee._adjustmentDate,
+      _adjustmentShift: employee._adjustmentShift
     });
   }
   
@@ -522,12 +525,22 @@ class RosterDatabase {
       if (dateStr && shiftSel && typeof getAllowedCodes === 'function') {
         const allowedCodes = getAllowedCodes(dateStr, shiftSel);
         
-        if (allowedCodes.length > 0 && !allowedCodes.includes(empShiftCode)) {
+        // Skip shift code check if employee is force-included (adjustment)
+        const isForced = !!(emp._forceInclude);
+        
+        /* 
+           REMOVED filtering logic from loadFromDatabase as requested.
+           The Site Board now uses ROSTER.exportToBoard() which relies on the Roster tab's pre-filtered list.
+           This function is now primarily for initial database population or legacy calls.
+        */
+        /*
+        if (!isForced && allowedCodes.length > 0 && !allowedCodes.includes(empShiftCode)) {
           console.log(`[DATABASE] Filtering out ${emp.name} - shift code ${empShiftCode} not allowed for ${shiftSel} shift on ${dateStr}`);
           return;
         } else if (allowedCodes.length > 0) {
           console.log(`[DATABASE] Including ${emp.name} - shift code ${empShiftCode} allowed for ${shiftSel} shift`);
         }
+        */
       }
       
       STATE.badges[badgeId] = {
@@ -538,7 +551,8 @@ class RosterDatabase {
         site: (site === 'OTHER' ? 'Other' : site),
         present: true,
         loc: 'unassigned',
-        hidden: false
+        hidden: false,
+        isAdjustment: !!emp._forceInclude
       };
     });
     

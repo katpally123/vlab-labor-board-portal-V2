@@ -14,6 +14,180 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function safeNum(v){ const n = Number(v); return Number.isFinite(n) ? n : 0; }
 
+  // --- Utility Functions & Constants (Moved to top for scope visibility) ---
+  window.shiftCodeOf = function(v){ if (!v) return ''; const s = String(v).trim(); return s.slice(0,2).toUpperCase(); };
+  
+  const DAY_SET   = new Set(['DA','DB','DC','DL','DN','DH']);
+  const NIGHT_SET = new Set(['NA','NB','NC','NL','NN','NH']);
+  const STRICT_WEEK = true;
+  const dayNames  = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  
+  const WEEK_ALLOWED = {
+    'Sunday':    ['DA','DL','DN','DH','NA','NL','NN'],
+    'Monday':    ['DA','DC','DL','DH','NA','NC','NL','NH'],
+    'Tuesday':   ['DA','DC','DL','NA','NC','NL'],
+    'Wednesday': ['DA','DB','NA','NB'],
+    'Thursday':  ['DB','DC','DN','NB','NC','NN','NH'],
+    'Friday':    ['DB','DC','DN','DH','NB','NC','NN','NH'],
+    'Saturday':  ['DB','DL','DN','DH','NB','NL','NN','NH']
+  };
+
+  // Shift Type Map: 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
+  const shiftTypeMap = {
+    day:   {0:'FHD',1:'FHD',2:'FHD',3:'FHD',4:'BHD',5:'BHD',6:'BHD'},
+    night: {0:'FHN',1:'FHN',2:'FHN',3:'FHN',4:'BHN',5:'BHN',6:'BHN'}
+  };
+
+  window.getAllowedCodes = function(dateStr, shift){
+    const set = shift === 'day' ? DAY_SET : NIGHT_SET;
+    if (!STRICT_WEEK || !dateStr) return Array.from(set);
+    
+    // Parse date (local)
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dateObj = new Date(y, m - 1, d);
+    const dayName = dayNames[dateObj.getDay()];
+    const weekAllowed = new Set(WEEK_ALLOWED[dayName] || []);
+    
+    // Intersect
+    return Array.from(set).filter(c => weekAllowed.has(c));
+  };
+
+  // --- Normalize Employee Helper ---
+  window.normalizeEmployee = function(emp) {
+    if (!emp) return null;
+    
+    // 1. Resolve ID
+    const id = String(emp['Employee ID'] || emp['ID'] || emp['EID'] || emp['User ID'] || emp['User'] || emp.id || emp['Associate ID'] || emp['ASSOCIATE ID'] || emp['Worker ID'] || '').trim();
+    
+    // 2. Resolve Name
+    let name = emp['Employee Name'] || emp['Name'] || emp['name'] || 'Unknown';
+    // If name looks like "Last, First", convert to "First Last"
+    if (name.includes(',')) {
+      const parts = name.split(',').map(s => s.trim());
+      if (parts.length === 2) name = `${parts[1]} ${parts[0]}`;
+    }
+    
+    // 3. Resolve Shift Code
+    const scode = window.shiftCodeOf(emp['Shift Pattern'] || emp['ShiftCode'] || emp['scode'] || emp['shiftCode'] || '');
+    
+    // 4. Resolve User ID
+    const userId = String(emp['User ID'] || emp['User'] || emp['login'] || emp['Login'] || '').trim().toLowerCase();
+    
+    // 5. Resolve Site
+    const site = (emp['Site'] || emp['site'] || '').trim().toUpperCase();
+
+    return {
+      id: id,
+      name: name,
+      shiftCode: scode,
+      userId: userId,
+      site: site,
+      manager: emp['Manager Name'] || emp['Manager'] || '',
+      dept: emp['Department ID'] || '',
+      area: emp['Management Area ID'] || '',
+      isAdjustment: !!(emp._forceInclude || emp._isUploaded),
+      raw: emp
+    };
+  };
+
+  // --- Root Cause Fix #2: Process Adjustments Logic ---
+  function processAdjustments(adjRows, rosterRows, context) {
+    const stats = { SWAPIN: 0, SWAPOUT: 0, VET: 0, VTO: 0, LS_IN: 0, LS_OUT: 0, added: 0, removed: 0 };
+    const forceIds = new Set();
+    if (!Array.isArray(adjRows) || adjRows.length === 0) return { combinedRoster: rosterRows, stats, forceIds };
+
+    const { date, shift, site } = context;
+    // Normalize shift for comparison (Day/Night)
+    const shiftNorm = (shift || 'day').toLowerCase();
+    const targetShiftCodePrefix = shiftNorm === 'day' ? 'D' : 'N';
+
+    // Create a map of existing roster for quick lookup
+    const rosterMap = new Map();
+    rosterRows.forEach(r => {
+      const id = String(r['Employee ID'] || r['ID'] || r['EID'] || '').trim();
+      const uid = String(r['User ID'] || r['User'] || '').trim().toLowerCase();
+      if (id) rosterMap.set(id, r);
+      if (uid) rosterMap.set(uid, r);
+    });
+
+    adjRows.forEach(row => {
+      // Check date match if present in CSV
+      const rowDate = row['Date'] || row['date'];
+      if (rowDate && rowDate !== date) return;
+
+      const action = (row['Action'] || row['Type'] || '').toUpperCase();
+      const uid = String(row['User ID'] || row['User'] || '').trim().toLowerCase();
+      const eid = String(row['Employee ID'] || row['ID'] || '').trim();
+      
+      if (!uid && !eid) return;
+
+      // Determine if this is an "IN" or "OUT" action
+      const isIn = ['SWAPIN', 'VET', 'LS_IN'].includes(action);
+      const isOut = ['SWAPOUT', 'VTO', 'LS_OUT'].includes(action);
+
+      if (isIn) {
+        stats[action] = (stats[action] || 0) + 1;
+        stats.added++;
+        forceIds.add(uid || eid);
+
+        // If not in roster, create synthetic record
+        let record = rosterMap.get(uid) || rosterMap.get(eid);
+        if (!record) {
+          record = {
+            'Employee Name': row['Employee Name'] || row['Name'] || uid,
+            'Employee ID': eid || 'GEN-' + Math.floor(Math.random() * 100000),
+            'User ID': uid,
+            'Employee Status': 'Active', // CRITICAL: Must be Active
+            'Shift Pattern': targetShiftCodePrefix + 'A', // CRITICAL: Valid shift code
+            'Department ID': row['Department ID'] || '9999',
+            'Management Area ID': row['Management Area ID'] || '999',
+            'Manager Name': row['Manager Name'] || 'Adjusted',
+            '_isUploaded': true,
+            '_forceInclude': true,
+            '_adjustmentDate': date,
+            '_adjustmentShift': shift
+          };
+          
+          // Normalize synthetic record immediately
+          const norm = window.normalizeEmployee(record);
+          if (norm) {
+             // Backfill normalized fields into record to ensure consistency
+             record['Employee Name'] = norm.name;
+             record['Employee ID'] = norm.id;
+             record['User ID'] = norm.userId;
+             record['Shift Pattern'] = norm.shiftCode;
+          }
+
+          rosterRows.push(record);
+          // Update map so we don't add duplicates if multiple actions
+          if (uid) rosterMap.set(uid, record);
+          if (eid) rosterMap.set(eid, record);
+        } else {
+          // Update existing record to ensure it flows through
+          record._forceInclude = true;
+          record._adjustmentDate = date;
+          record._adjustmentShift = shift;
+          // If status was not active, force it
+          if (String(record['Employee Status'] || '').toLowerCase() !== 'active') {
+             record['Employee Status'] = 'Active';
+          }
+        }
+      } else if (isOut) {
+        stats[action] = (stats[action] || 0) + 1;
+        stats.removed++;
+        // Find and mark as excluded or remove
+        const record = rosterMap.get(uid) || rosterMap.get(eid);
+        if (record) {
+          record._forceExclude = true;
+        }
+      }
+    });
+
+    // Filter out excluded
+    const finalRoster = rosterRows.filter(r => !r._forceExclude);
+    return { combinedRoster: finalRoster, stats, forceIds };
+  }
+
   function buildHeadcountDataset(){
     if (!window.DATABASE || !DATABASE.database) return [];
     // Use DATABASE which stores richer fields (departmentId, managementAreaId, status, scode, site)
@@ -29,14 +203,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const rows = [];
     window.__ROSTER_INCLUDED = []; // raw included employees for associate list
     employees.forEach(emp => {
-      const empSiteRaw = (emp.site || emp.Site || '').toString().trim().toUpperCase();
-      // Treat YDD_SHARED as part of both YDD2 and YDD4 cluster; also allow any "YDD" prefixed code as cluster
-      const isYddClusterSite = /^(YDD2|YDD4|YDD_SHARED|YDD)/.test(empSiteRaw);
-      // When computing base dataset for table we still apply current site filter,
-      // but we'll also build a multi-site aggregate separately.
-      if (site === 'YHM2' && empSiteRaw !== 'YHM2') return;
-      if ((site === 'YDD2' || site === 'YDD4') && !isYddClusterSite) return;
-      const sc = shiftCodeOf(emp.scode);
+      // Normalize first to ensure consistent fields
+      const norm = window.normalizeEmployee(emp);
+      if (!norm || !norm.id) return;
+
       let forced = !!(emp._forceInclude || emp._isUploaded); // allow force-included to bypass code gating
       
       // Strict date/shift check for adjustments
@@ -44,13 +214,36 @@ document.addEventListener('DOMContentLoaded', () => {
         if (emp._adjustmentDate && emp._adjustmentDate !== dateStr) forced = false;
         else if (emp._adjustmentShift && emp._adjustmentShift !== shift) forced = false;
       }
+
+      const empSiteRaw = norm.site;
+      // Treat YDD_SHARED as part of both YDD2 and YDD4 cluster; also allow any "YDD" prefixed code as cluster
+      const isYddClusterSite = /^(YDD2|YDD4|YDD_SHARED|YDD)/.test(empSiteRaw);
+      
+      // When computing base dataset for table we still apply current site filter,
+      // but we'll also build a multi-site aggregate separately.
+      // BYPASS SITE FILTER IF FORCED
+      if (!forced) {
+        if (site === 'YHM2' && empSiteRaw !== 'YHM2') return;
+        if ((site === 'YDD2' || site === 'YDD4') && !isYddClusterSite) return;
+      }
+
+      const sc = norm.shiftCode;
+      
       // If it was an uploaded/synthetic record and it's no longer forced (due to date mismatch), hide it
       if (!forced && emp._isUploaded) return;
 
       if (!forced && !allowedSet.has(sc)) return; // weekday allowed
       if (!forced && !daySet.has(sc)) return; // shift set allowed
-      if (String(emp.status || '').toLowerCase() !== 'active') return;
-      if (SHIFT_CODE_FILTER && sc !== SHIFT_CODE_FILTER) return; // apply user shift code filter
+      if (String(emp.status || '').toLowerCase() !== 'active' && !forced) return;
+      if (SHIFT_CODE_FILTER && sc !== SHIFT_CODE_FILTER && !forced) return; // apply user shift code filter
+      
+      // Use the normalized object for consistency, but keep raw ref
+      // We push the RAW object to rows because downstream logic might expect specific keys,
+      // BUT we ensure the raw object has the normalized keys backfilled if missing.
+      emp['Employee ID'] = norm.id;
+      emp['Employee Name'] = norm.name;
+      emp['Shift Pattern'] = norm.shiftCode;
+      
       rows.push(emp);
       window.__ROSTER_INCLUDED.push(emp);
     });
@@ -283,6 +476,9 @@ document.addEventListener('DOMContentLoaded', () => {
   window.renderRosterFilterSummary = renderRosterFilterSummary;
 
   // Auto-refresh headcount when core selectors change
+  // REMOVED legacy handleFilterChange to prevent double-loading and site-switch reloads
+  // New logic is handled in setupSiteSwitching()
+  /*
   function handleFilterChange() {
     // Reload from database to ensure STATE.badges is filtered correctly by date/shift
     if (window.DATABASE && typeof DATABASE.loadFromDatabase === 'function') {
@@ -297,6 +493,7 @@ document.addEventListener('DOMContentLoaded', () => {
     el && el.addEventListener('change', handleFilterChange); 
   });
   document.querySelectorAll('input[name="shift"], input[name="shift_roster"]').forEach(r => r.addEventListener('change', handleFilterChange));
+  */
   // Also keep schedule chips synced on control changes (siteBoard view)
   ['site','date','quarter','plannedVolumeStub'].forEach(id => { const el = document.getElementById(id); el && el.addEventListener('change', setScheduleChips); });
   document.querySelectorAll('input[name="shift"]').forEach(r => r.addEventListener('change', setScheduleChips));
@@ -508,6 +705,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const name = String(r['Employee Name'] ?? r['Name'] ?? r['Full Name'] ?? '').trim();
             const sc = shiftCodeOf(r['Shift Pattern'] ?? r['ShiftCode'] ?? r['Shift Code'] ?? r['Shift'] ?? r['Pattern']);
             const site = classifySite(r);
+            const badgeBarcodeId = String(r['Badge Barcode ID'] ?? r['BadgeBarcodeID'] ?? r['Barcode'] ?? r['Badge ID'] ?? r['BadgeId'] ?? r['Badge'] ?? '').trim();
             
             if ((!eid && !handle) || !name) return;
             
@@ -526,7 +724,8 @@ document.addEventListener('DOMContentLoaded', () => {
               lastSeen: new Date().toISOString(),
               _forceInclude: !!(r._forceInclude || r._isUploaded),
               _adjustmentDate: r._adjustmentDate,
-              _adjustmentShift: r._adjustmentShift
+              _adjustmentShift: r._adjustmentShift,
+              badgeBarcodeId: badgeBarcodeId
             };
             
             if (existing) {
@@ -541,6 +740,13 @@ document.addEventListener('DOMContentLoaded', () => {
           DATABASE.saveDatabase();
           console.log(`[DATABASE] Updated database: ${dbAddedCount} added, ${dbUpdatedCount} updated from ${activeRows.length} active associates`);
         }
+
+        // --- Root Cause Fix #1 & #2: Rebuild Headcount AFTER Database Update ---
+        // Ensure __ROSTER_INCLUDED is populated from the updated database
+        try {
+            renderHeadcountOverview(); 
+            console.log(`[HEADCOUNT] Rebuilt dataset. Included count: ${window.__ROSTER_INCLUDED ? window.__ROSTER_INCLUDED.length : 0}`);
+        } catch(err){ console.warn('[HEADCOUNT] render skipped:', err); }
 
         let filtered = activeRows.filter(r => {
           const site = classifySite(r);
@@ -620,17 +826,10 @@ document.addEventListener('DOMContentLoaded', () => {
           const name = String(r['Employee Name'] ?? r['Name'] ?? r['Full Name'] ?? '').trim();
           const eid  = String(r['Employee ID'] ?? r['ID'] ?? r['EID'] ?? r['Employee Number'] ?? '').trim();
           const sc   = shiftCodeOf(r['Shift Pattern'] ?? r['ShiftCode'] ?? r['Shift Code'] ?? r['Shift'] ?? r['Pattern']);
-          const classifiedSite = classifySite(r);
-          const actualSite = classifiedSite === 'YDD_SHARED' ? siteSel : classifiedSite;
-          const barcode = String(r['Badge Barcode ID'] ?? r['Barcode'] ?? r['Badge'] ?? r['Employee Login'] ?? r['Username'] ?? '').trim();
-          const handle = String(r['User ID'] ?? r['Handle'] ?? r['Employee Handle'] ?? r['Login'] ?? '').trim();
-          const photo = String(r['Photo'] ?? r['Photo URL'] ?? r['Image'] ?? '').trim();
-          const manager = String(r['Manager Name'] ?? r['Manager'] ?? '').trim();
-          const departmentId = r['Department ID'] ?? r.departmentId ?? r.DepartmentID ?? r['Dept ID'];
-          const managementAreaId = r['Management Area ID'] ?? r.managementAreaId ?? r.ManagementAreaID ?? r['Mgmt Area ID'];
+          const site = classifySite(r);
           const id   = `b_${eid || idx}_${Math.random().toString(36).slice(2,8)}`;
           const isUploaded = r['_isUploaded'] === true;
-          STATE.badges[id] = { id, name, eid, scode: sc, site: actualSite, present:false, loc:'unassigned', barcode, handle, photo, isUploaded, manager, departmentId, managementAreaId, userId: handle };
+          STATE.badges[id] = { id, name, eid, scode: sc, site, present:false, loc:'unassigned', barcode, handle, photo, isUploaded, manager, departmentId, managementAreaId, userId: handle };
         });
 
         if (Object.keys(STATE.badges).length === 0){
@@ -647,7 +846,7 @@ document.addEventListener('DOMContentLoaded', () => {
         renderAllBadges();
         applySiteFilter();
         setCounts();
-        try{ renderHeadcountOverview(); }catch(err){ console.warn('[HEADCOUNT] render skipped:', err); }
+        try{ renderHeadcountOverview(); }catch(err){ console.warn('[HEADCOUNT] render skipped', err); }
         
         try{ 
           STATE.quarterAssignments[STATE.currentQuarter] = STATE.quarterAssignments[STATE.currentQuarter] || {}; 
@@ -733,36 +932,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   // Attach click handler for explicit fetch
-  if (fetchRosterBtn) {
-    fetchRosterBtn.addEventListener('click', async () => {
-      try {
-        // Ensure roster-side mirrors main (source of truth is Site Board controls now)
-        // Removed sync logic as controls are unified
-
-        // Provide feedback and disable while loading
-        fetchRosterBtn.disabled = true;
-        fetchRosterBtn.textContent = 'Fetching...';
-        if (window.TOAST) TOAST.info('Fetching roster using current Date/Shift/Site...');
-
-        // Use the existing database fetch which respects both roster and site controls
-        if (window.DATABASE && typeof DATABASE.loadFromDatabase === 'function') {
-          DATABASE.loadFromDatabase();
-        } else {
-          console.warn('[FETCH] DATABASE not ready, attempting simpleAutoLoad');
-          if (typeof simpleAutoLoad === 'function') simpleAutoLoad();
-        }
-        // Persist schedule controls right after a successful fetch
-        try { window.__saveSchedule && window.__saveSchedule(); } catch(_){ }
-
-        // Refresh roster overview/filters after load
-        try { if (typeof renderHeadcountOverview === 'function') renderHeadcountOverview(); } catch(_) {}
-        try { if (typeof setCounts === 'function') setCounts(); } catch(_) {}
-      } finally {
-        fetchRosterBtn.disabled = false;
-        fetchRosterBtn.textContent = '🔄 Fetch Roster';
-      }
-    });
-  }
+  // REMOVED fetchRosterBtn handler per user request
+  // if (fetchRosterBtn) { ... }
 
   // Clear Board: move all assigned badges for current site back to unassigned
   if (clearBoardBtn) {
@@ -858,32 +1029,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const unassignedCountEl = document.getElementById('unassignedCount');
   const quarterSelect = document.getElementById('quarter');
 
-  // Basic constants and helpers (kept small and explicit)
-  const DAY_SET   = new Set(['DA','DB','DC','DL','DN','DH']);
-  const NIGHT_SET = new Set(['NA','NB','NC','NL','NN','NH']);
-  // Remove YHM2 site from site filtering universe on Site Board (YDD2/YDD4 share associates)
-  // Any badge with YHM2 site will be treated as unassigned-other and hidden unless later separate board implemented.
-  // When false, day/night filtering uses only DAY_SET/NIGHT_SET regardless of weekday
-  // Turn to true to also restrict by WEEK_ALLOWED (calendar gating)
-  const STRICT_WEEK = true; // Enable weekday-specific code gating (per your request)
-  const dayNames  = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  // Basic constants and helpers (Moved to top of file)
+  // const DAY_SET   = new Set(['DA','DB','DC','DL','DN','DH']);
+  // const NIGHT_SET = new Set(['NA','NB','NC','NL','NN','NH']);
+  // const STRICT_WEEK = true; 
+  // const dayNames  = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const shortDay  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
-  const WEEK_ALLOWED = {
-    // Codes active per calendar day (union of day & night codes for that weekday)
-    'Sunday':    ['DA','DL','DN','DH','NA','NL','NN'],
-    'Monday':    ['DA','DC','DL','DH','NA','NC','NL','NH'],
-    'Tuesday':   ['DA','DC','DL','NA','NC','NL'],
-    'Wednesday': ['DA','DB','NA','NB'],
-    'Thursday':  ['DB','DC','DN','NB','NC','NN','NH'],
-    'Friday':    ['DB','DC','DN','DH','NB','NC','NN','NH'],
-    'Saturday':  ['DB','DL','DN','DH','NB','NL','NN','NH']
-  };
-
-  const shiftTypeMap = {
-    day:   {0:'FHD',1:'FHD',2:'FHD',3:'FHD',4:'BHD',5:'BHD',6:'BHD'},
-    night: {0:'FHN',1:'FHN',2:'FHN',3:'FHN',4:'BHN',5:'BHN',6:'BHN'}
-  };
+  /* const WEEK_ALLOWED = { ... moved to top ... }; */
 
   // Tiles order matches DOM `board-card` order: process tiles only (no Unassigned tile here)
   const TILES = [
@@ -948,7 +1101,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const pool = Object.values(STATE.badges).filter(b => {
       if (b.loc !== 'unassigned') return false;
       if (!b.present) return false;
-      if (b.hidden) return false;
+      // Strict visibility check
+      const currentDate = document.getElementById('date')?.value || new Date().toISOString().slice(0,10);
+      const currentShift = document.querySelector('input[name="shift"]:checked')?.value || 'day';
+      if (!shouldShowBadge(b, currentSite, currentShift, currentDate)) return false;
       try { return MULTISITE.badgeBelongsToSite ? MULTISITE.badgeBelongsToSite(b, currentSite) : true; } catch(_) { return true; }
     });
     if (pool.length === 0) return 0;
@@ -978,7 +1134,197 @@ document.addEventListener('DOMContentLoaded', () => {
     try{ renderAllBadges(); }catch(_){ }
     try{ setCounts(); }catch(_){ }
     try{ if (typeof snapshotCurrentQuarter === 'function') snapshotCurrentQuarter(); }catch(_){ }
-    return take;
+  }
+
+  // ==========================================================================
+  // RESTORED FUNCTIONS: exportToBoard, renderSiteBoard, updateSBHeader
+  // ==========================================================================
+  
+  window.ROSTER = {
+    exportToBoard: function() {
+      console.log("[ROSTER] Exporting to Site Board...");
+      
+      // 1. Gather Context
+      const dateVal = document.getElementById('date')?.value || "";
+      const shiftEl = document.querySelector('input[name="shift"]:checked');
+      const shiftVal = shiftEl ? shiftEl.value : "day";
+      const siteVal = document.getElementById('site')?.value || "YDD2";
+      const quarterVal = document.getElementById('quarter')?.value || "Q1";
+      
+      // 2. Get the Master List (including adjustments)
+      const masterList = window.__ROSTER_INCLUDED || [];
+      
+      console.log(`[ROSTER] Exporting ${masterList.length} associates to Site Board.`);
+
+      // Calculate Shift Type
+      let shiftType = "FHD"; 
+      try {
+        if (dateVal) {
+           // Use local date parsing
+           const [y, m, d] = dateVal.split('-').map(Number);
+           const dateObj = new Date(y, m - 1, d);
+           const dow = dateObj.getDay();
+           
+           const shiftTypeMap = {
+             day:   {0:'FHD',1:'FHD',2:'FHD',3:'FHD',4:'BHD',5:'BHD',6:'BHD'},
+             night: {0:'FHN',1:'FHN',2:'FHN',3:'FHN',4:'BHN',5:'BHN',6:'BHN'}
+           };
+
+           if (shiftTypeMap[shiftVal]) {
+             shiftType = shiftTypeMap[shiftVal][dow] || "FHD";
+             if (dow === 3) shiftType = `Overlap (${shiftType})`;
+           }
+        }
+      } catch(e) { console.warn("Shift type calc failed", e); }
+      
+      // 3. Create Transfer Context
+      window.shiftContext = {
+        date: dateVal,
+        shift: shiftVal, // Keep lowercase for logic
+        shiftDisplay: shiftVal.charAt(0).toUpperCase() + shiftVal.slice(1), // Capitalized for display
+        shiftType: shiftType,
+        site: siteVal,
+        quarter: quarterVal,
+        associates: masterList,
+        expectedHC: masterList.length, 
+        actualHC: masterList.length 
+      };
+      
+      // 4. Trigger Render
+      if (typeof window.renderSiteBoard === 'function') {
+        window.renderSiteBoard(window.shiftContext);
+      } else {
+        console.error("[ROSTER] renderSiteBoard function missing!");
+      }
+      
+      // 5. Switch Tab (Suppress auto-load)
+      const sbTabBtn = document.querySelector('button[data-target="siteBoard"]');
+      if(sbTabBtn) {
+        // Mark as manual switch to prevent auto-load
+        window._MANUAL_TAB_SWITCH = true;
+        sbTabBtn.click();
+        setTimeout(() => { window._MANUAL_TAB_SWITCH = false; }, 500);
+      }
+      
+      if (window.TOAST) TOAST.success(`Loaded ${masterList.length} associates to Site Board`);
+    }
+  };
+
+  window.renderSiteBoard = function(ctx) {
+    console.log("[SITEBOARD] Rendering with context:", ctx);
+    console.log(`[SITEBOARD] Processing ${ctx.associates.length} associates for badges...`);
+    
+    // A. Update Header
+    updateSBHeader(ctx);
+    
+    // B. Reset State
+    STATE.badges = {};
+    if (!STATE.sites[ctx.site]) STATE.sites[ctx.site] = { assignments: {} };
+    STATE.sites[ctx.site].assignments = {};
+    
+    STATE.currentSite = ctx.site;
+    STATE.currentDate = ctx.date;
+    STATE.currentShift = ctx.shift.toLowerCase(); // Store as lowercase internally
+    STATE.currentQuarter = ctx.quarter;
+
+    // C. Populate Badges (Unassigned)
+    const container = document.getElementById('unassignedStack');
+    if(container) container.innerHTML = '';
+    
+    let createdCount = 0;
+    ctx.associates.forEach(emp => {
+      // Use normalizeEmployee for consistent data
+      const norm = window.normalizeEmployee(emp);
+      if (!norm || !norm.id) {
+        console.warn("[SITEBOARD] Skipping associate with no ID:", emp);
+        return;
+      }
+      
+      const badgeId = norm.id;
+      const name = norm.name;
+      const login = norm.userId;
+      const scode = norm.shiftCode;
+      
+      // Create badge entry per user request
+      STATE.badges[badgeId] = {
+        id: badgeId,
+        name: name,
+        login: login,
+        scode: scode,
+        manager: norm.manager,
+        dept: norm.dept,
+        area: norm.area,
+        shift: ctx.shift, 
+        site: ctx.site,
+        loc: 'unassigned',
+        present: true,
+        isAdjustment: norm.isAdjustment,
+        details: emp
+      };
+      createdCount++;
+      
+      // Render Badge - Bypass strict filtering
+      if (typeof renderBadge === 'function') {
+          // Force render by setting a flag that renderBadge might respect, or just calling it.
+          // Note: renderBadge usually checks shouldShowBadge. We need to ensure it doesn't hide it.
+          // For now, we assume renderBadge creates the element.
+          const el = renderBadge(STATE.badges[badgeId]);
+          if(el) {
+             // Ensure it's visible
+             el.style.display = ''; 
+             if(container) container.appendChild(el);
+          }
+      } else {
+          // Fallback render if missing
+          const el = document.createElement('div');
+          el.className = 'badge unassigned';
+          el.textContent = name;
+          el.dataset.id = badgeId;
+          if(container) container.appendChild(el);
+      }
+    });
+    
+    console.log(`[SITEBOARD] Created ${createdCount} badges.`);
+    
+    // D. Update Counts
+    updateSBCounts();
+  };
+
+  function updateSBHeader(ctx) {
+    // Ensure we are reading from the passed context, NOT global state
+    const elDate = document.getElementById('displayDate');
+    const elDay = document.getElementById('displayDay');
+    const elShift = document.getElementById('displayShift');
+    const elShiftType = document.getElementById('displayShiftType');
+    const elSite = document.getElementById('displaySite');
+    const elPlan = document.getElementById('displayPlannedHC');
+    const elActual = document.getElementById('displayActualHC');
+
+    if (elDate) elDate.textContent = ctx.date || '-';
+    
+    if (elDay) {
+        if (ctx.date) {
+            try {
+              const [y, m, d] = ctx.date.split('-').map(Number);
+              const dateObj = new Date(y, m - 1, d);
+              elDay.textContent = dateObj.toLocaleDateString('en-US', { weekday: 'long' });
+            } catch(e) { elDay.textContent = '-'; }
+        } else {
+            elDay.textContent = '-';
+        }
+    }
+
+    if (elShift) elShift.textContent = ctx.shiftDisplay || ctx.shift || '-';
+    if (elShiftType) elShiftType.textContent = ctx.shiftType || '-';
+    if (elSite) elSite.textContent = ctx.site || '-';
+    if (elPlan) elPlan.textContent = ctx.expectedHC || '0';
+    if (elActual) elActual.textContent = ctx.actualHC || '0';
+  }
+  
+  function updateSBCounts() {
+      const count = Object.keys(STATE.badges).length;
+      const elActual = document.getElementById('displayActualHC');
+      if(elActual) elActual.textContent = count;
   }
 
   // attach listeners to inputs
@@ -1010,7 +1356,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const availablePool = Object.values(STATE.badges).filter(b => {
           if (b.loc !== 'unassigned') return false;
           if (!b.present) return false;
-          if (b.hidden) return false;
+          // Strict visibility check
+          const currentDate = document.getElementById('date')?.value || new Date().toISOString().slice(0,10);
+          const currentShift = document.querySelector('input[name="shift"]:checked')?.value || 'day';
+          if (!shouldShowBadge(b, currentSite, currentShift, currentDate)) return false;
           try { return MULTISITE.badgeBelongsToSite ? MULTISITE.badgeBelongsToSite(b, currentSite) : true; } catch(_) { return true; }
         }).length;
         const maxPossible = countsNow + availablePool;
@@ -1252,15 +1601,2676 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && tileOverlayEl) closeTileOverlay(); });
 
   // In-memory badge store with analytics tracking and multi-site support
-  const STATE = window.STATE;
+  const STATE = { 
+    badges: {},
+    analytics: {
+      history: [], // Assignment history log
+      sessions: [], // Work sessions data
+      performance: {}, // Employee performance metrics
+      patterns: {} // Assignment pattern analysis
+    },
+    currentQuarter: 'Q1',
+    quarterAssignments: { Q1: {}, Q2: {}, Q3: {}, Q4: {} },
+    quarterLocks: { Q1: false, Q2: false, Q3: false, Q4: false },
+    // Multi-site support
+    currentSite: 'YDD2', // Active site being viewed
+    suppressAnalytics: false, // Flag to prevent analytics during internal operations
+    sites: {
+      YDD2: { 
+        assignments: {},  // badgeId -> location mapping for this site
+        processes: ['cb','ibws','lineloaders','trickle','dm','idrt','pb','e2s','dockws','e2sws','tpb','tws','sap','ao5s','pa','ps','laborshare']
+      },
+      YDD4: { 
+        assignments: {},  // badgeId -> location mapping for this site
+        processes: ['cb','ibws','lineloaders','trickle','dm','idrt','pb','e2s','dockws','e2sws','tpb','tws','sap','ao5s','pa','ps','laborshare']
+      },
+      YHM2: { 
+        assignments: {},  // badgeId -> location mapping for this site
+        processes: ['cb','ibws','lineloaders','trickle','dm','idrt','pb','e2s','dockws','e2sws','tpb','tws','sap','ao5s','pa','ps','laborshare']
+      }
+    }
+  };
 
   // Multi-Site Management Functions
-  // MULTISITE module is loaded from js/modules/multisite.js
-  const MULTISITE = window.MULTISITE;
+  const MULTISITE = {
+    // Ensure current site is synchronized with form
+    ensureCurrentSiteSync: function() {
+      const formSite = document.getElementById('site')?.value;
+      const headerSite = document.getElementById('headerSiteSelector')?.value;
+      const siteBoardSite = document.getElementById('siteBoardSiteSelector')?.value;
+      
+      if (formSite && formSite !== STATE.currentSite) {
+        console.log(`[MULTISITE] Syncing currentSite from form: ${STATE.currentSite} -> ${formSite}`);
+        STATE.currentSite = formSite;
+      } else if (headerSite && headerSite !== STATE.currentSite) {
+        console.log(`[MULTISITE] Syncing currentSite from header: ${STATE.currentSite} -> ${headerSite}`);
+        STATE.currentSite = headerSite;
+      } else if (siteBoardSite && siteBoardSite !== STATE.currentSite) {
+        console.log(`[MULTISITE] Syncing currentSite from site board: ${STATE.currentSite} -> ${siteBoardSite}`);
+        STATE.currentSite = siteBoardSite;
+      }
+      
+      return STATE.currentSite;
+    },
+    
+    // Load associates from database for a specific site
+    loadAssociatesFromDatabase: function(siteCode) {
+      if (!DATABASE || DATABASE.database.size === 0) {
+        console.warn('[MULTISITE] Database is empty, cannot load associates for site:', siteCode);
+        return;
+      }
+      
+      console.log(`[MULTISITE] Loading associates from database for site: ${siteCode}`);
+      
+      // Get current form settings for filtering
+      const currentShift = document.querySelector('input[name="shift"]:checked')?.value || 'day';
+      const currentDate = document.getElementById('date')?.value || '';
+      
+      // Load all associates from database and filter for current site
+      const allAssociates = Array.from(DATABASE.database.values());
+      const siteAssociates = allAssociates.filter(associate => {
+        const site = classifySite(associate);
+        
+        // Site filtering logic
+        if (siteCode === 'YHM2') {
+          return site === 'YHM2';
+        } else if (siteCode === 'YDD2' || siteCode === 'YDD4') {
+          return site === 'YDD_SHARED' || site === 'YDD2' || site === 'YDD4';
+        }
+        return false;
+      });
+      
+      console.log(`[MULTISITE] Found ${siteAssociates.length} associates for site ${siteCode} in database`);
+      
+      // Clear badges that don't belong to the current site
+      Object.keys(STATE.badges).forEach(badgeId => {
+        const badge = STATE.badges[badgeId];
+        const belongsToCurrentSite = this.badgeBelongsToSite(badge, siteCode);
+        if (!belongsToCurrentSite) {
+          // REMOVED b.hidden logic per guardrail #5
+          // Visibility is now handled by shouldShowBadge() in renderAllBadges()
+          console.log(`[MULTISITE] Badge ${badgeId} (${badge.site}) - doesn't belong to ${siteCode} (will be filtered by render)`);
+        }
+      });
+      
+      // Create badges for the associates
+      siteAssociates.forEach(associate => {
+        const badgeId = `b_${associate['Employee ID'] || associate.ID || associate.EID}`;
+        
+        // Create or update badge for this associate
+        if (!STATE.badges[badgeId]) {
+          STATE.badges[badgeId] = {
+            id: badgeId,
+            name: associate['Employee Name'] || associate.Name || 'Unknown',
+            eid: associate['Employee ID'] || associate.ID || associate.EID || '',
+            scode: shiftCodeOf(associate['Shift Pattern'] || associate.ShiftCode || ''),
+            site: classifySite(associate),
+            present: true,
+            loc: 'unassigned'
+          };
+          console.log(`[MULTISITE] Created badge for ${badgeId} (${STATE.badges[badgeId].name})`);
+        } else {
+          // Badge exists - make sure it's visible and belongs to current site
+          // REMOVED b.hidden logic per guardrail #5
+          console.log(`[MULTISITE] Showing existing badge ${badgeId} (${STATE.badges[badgeId].name}) for ${siteCode}`);
+        }
+      });
+      
+      console.log(`[MULTISITE] Database load complete for ${siteCode}. Total badges: ${Object.keys(STATE.badges).length}`);
+    },
+    
+    // Switch to a different site view
+    switchToSite: function(siteCode) {
+      if (!STATE.sites[siteCode]) {
+        console.warn('[MULTISITE] Unknown site:', siteCode);
+        return false;
+      }
+      
+      // Save current site assignments before switching (for site-specific assignments)
+      this.saveCurrentSiteAssignments();
+      
+      // Update current site
+      const oldSite = STATE.currentSite;
+      STATE.currentSite = siteCode;
+      console.log(`[MULTISITE] Updated STATE.currentSite from ${oldSite} to ${siteCode}`);
+      
+      // Clear current tile displays
+      this.clearAllTiles();
+      
+      // REMOVED loadAssociatesFromDatabase call per "Nuclear Option" fix
+      // We now keep the same roster in memory and just re-filter
+      
+      // Apply site filtering without changing assignments - preserve ALL assignments
+      Object.values(STATE.badges).forEach(badge => {
+        // REMOVED b.hidden logic per guardrail #5
+        // Visibility is now handled by shouldShowBadge() in renderAllBadges()
+        
+        const belongsToCurrentSite = this.badgeBelongsToSite(badge, siteCode);
+        if (belongsToCurrentSite) {
+          // For YDD2/YDD4: Use site-specific assignments
+          // For other sites: Keep existing assignments
+          if ((siteCode === 'YDD2' || siteCode === 'YDD4') && STATE.sites[siteCode].assignments[badge.id]) {
+            badge.loc = STATE.sites[siteCode].assignments[badge.id];
+          } else if (siteCode !== 'YDD2' && siteCode !== 'YDD4') {
+            // For non-YDD sites, preserve the existing assignment
+            // badge.loc stays as is
+          } else if ((siteCode === 'YDD2' || siteCode === 'YDD4') && !STATE.sites[siteCode].assignments[badge.id]) {
+            // YDD2/YDD4 badge with no assignment in current site - show as unassigned
+            badge.loc = 'unassigned';
+          }
+        }
+      });
+      
+      // Update header display
+      const headerSelector = document.getElementById('headerSiteSelector');
+      if (headerSelector) headerSelector.value = siteCode;
+      
+      // Update form site selector to match
+      const formSelector = document.getElementById('site');
+      if (formSelector) formSelector.value = siteCode;
 
+      // Update site board selector to match
+      const siteBoardSelector = document.getElementById('siteBoardSiteSelector');
+      if (siteBoardSelector) siteBoardSelector.value = siteCode;
+      
+      // Update site display
+      const elSite = document.getElementById('displaySite');
+      if (elSite) elSite.textContent = siteCode;
+      
+      // Update unassigned section header with site code
+      const unassignedSiteLabel = document.getElementById('unassignedSiteLabel');
+      if (unassignedSiteLabel) {
+        unassignedSiteLabel.textContent = `${siteCode} Unassigned`;
+      }
+      
+      // Re-render board with new site context
+      renderAllBadges();
+      setCounts();
+      
+      // Update roster overview/filters after site change
+      try{ renderHeadcountOverview(); }catch(_){ }
+      
+      // Save complete state to ensure all assignments persist across refreshes
+      try {
+        const snap = {
+          badges: STATE.badges,
+          sites: STATE.sites,
+          currentSite: STATE.currentSite,
+          meta: {
+            date: document.getElementById('date')?.value || '',
+            shift: document.querySelector('input[name="shift"]:checked')?.value || 'day',
+            site: STATE.currentSite,
+            quarter: STATE.currentQuarter || 'Q1'
+          }
+        };
+        localStorage.setItem('vlab:lastRoster', JSON.stringify(snap));
+        console.log('[SITE-SWITCH] Saved complete state after site switch');
+      } catch (saveError) {
+        console.warn('[SITE-SWITCH] Failed to save complete state:', saveError);
+      }
+      
+      console.log(`[MULTISITE] Switched from ${oldSite} to ${siteCode}`);
+      
+      // Update database status display
+      if (DATABASE) {
+        DATABASE.updateStatus();
+      }
+      
+      // Log the site switch
+      ANALYTICS.logAssignment(null, `Site Switch: ${oldSite}`, `Site Switch: ${siteCode}`);
+      
+      return true;
+    },
+    
+    // Save current assignments to the current site
+    saveCurrentSiteAssignments: function() {
+      const currentSite = STATE.currentSite;
+      if (!STATE.sites[currentSite]) return;
+      
+      // Clear existing assignments for this site
+      STATE.sites[currentSite].assignments = {};
+      
+      // Save only assignments for badges that belong to current site AND are currently visible
+      Object.values(STATE.badges).forEach(badge => {
+        // REMOVED b.hidden logic per guardrail #5
+        if (badge.loc !== 'unassigned' && 
+            // badge.loc !== 'hidden' && // REMOVED
+            badge.loc !== 'assigned-elsewhere' &&
+            this.badgeBelongsToSite(badge, currentSite)) {
+          STATE.sites[currentSite].assignments[badge.id] = badge.loc;
+          
+          // Special debugging for YDD4 saves
+          if (currentSite === 'YDD4') {
+            console.log(`[YDD4-SAVE] Saving ${badge.name} → ${badge.loc} to YDD4 assignments`);
+          }
+        }
+      });
+      
+      console.log(`[MULTISITE] Saved ${Object.keys(STATE.sites[currentSite].assignments).length} assignments for ${currentSite}`);
+      
+      // Special debugging for YDD4 saves
+      if (currentSite === 'YDD4') {
+        console.log(`[YDD4-SAVE] Final YDD4 assignments:`, STATE.sites[currentSite].assignments);
+      }
+    },
+    
+    // Check if a badge belongs to the current site based on classification
+    badgeBelongsToSite: function(badge, targetSite) {
+      const badgeSite = badge.site; // This is the classified site from when badge was created
+      
+      // YHM2 is separate - only YHM2 badges show in YHM2  
+      if (targetSite === 'YHM2') {
+        return badgeSite === 'YHM2';
+      }
+      
+      // YDD2 and YDD4 share the same associate pool (YDD_SHARED badges can appear in both)
+      // but have separate assignments
+      if (targetSite === 'YDD2' || targetSite === 'YDD4') {
+        return badgeSite === 'YDD2' || badgeSite === 'YDD4' || badgeSite === 'YDD_SHARED';
+      }
+      
+      // Exact match for other sites
+      return badgeSite === targetSite;
+    },
+    
+    // Load assignments for a specific site with proper badge filtering
+    loadSiteAssignments: function(siteCode) {
+      if (!STATE.sites[siteCode]) return;
+      
+      // Suppress analytics during internal site loading
+      const oldSuppressFlag = STATE.suppressAnalytics;
+      STATE.suppressAnalytics = true;
+      
+      const siteAssignments = STATE.sites[siteCode].assignments || {};
+      
+      // Filter and set badge states based on site classification
+      let visibleBadges = 0;
+      let hiddenBadges = 0;
+      let restoredAssignments = 0;
+      
+      Object.values(STATE.badges).forEach(badge => {
+        const belongsToCurrentSite = this.badgeBelongsToSite(badge, siteCode);
+        
+        if (!belongsToCurrentSite) {
+          // Badge doesn't belong to this site - hide it completely
+          // REMOVED b.hidden logic per guardrail #5
+          // badge.loc = 'hidden'; // DO NOT SET TO HIDDEN, let render filter it
+          hiddenBadges++;
+          return;
+        }
+        
+        visibleBadges++;
+        
+        // Badge belongs to this site - preserve existing assignment if it exists
+        const savedAssignmentLocation = badge.loc; // This is the assignment from saved state
+        const isAssignedInCurrentSite = siteAssignments[badge.id];
+        const isAssignedInOtherSites = Object.keys(STATE.sites).some(otherSite => 
+          otherSite !== siteCode && 
+          STATE.sites[otherSite].assignments && 
+          STATE.sites[otherSite].assignments[badge.id]
+        );
+        
+        // For YDD2/YDD4 sites: use site-specific assignments only
+        // For other sites: prefer saved badge location if it's a valid process assignment
+        if ((siteCode === 'YDD2' || siteCode === 'YDD4') && isAssignedInCurrentSite) {
+          // YDD2/YDD4: Use site-specific assignment data only
+          badge.loc = siteAssignments[badge.id];
+          restoredAssignments++;
+        } else if ((siteCode === 'YDD2' || siteCode === 'YDD4') && !isAssignedInCurrentSite) {
+          // YDD2/YDD4: No assignment for this site - show as unassigned
+          badge.loc = 'unassigned';
+        } else if (savedAssignmentLocation && 
+            savedAssignmentLocation !== 'unassigned' && 
+            savedAssignmentLocation !== 'assigned-elsewhere' && 
+            savedAssignmentLocation !== 'hidden') {
+          // Other sites: Keep the saved assignment
+          badge.loc = savedAssignmentLocation;
+          restoredAssignments++;
+        } else if (isAssignedInCurrentSite) {
+          // Other sites: Use site assignment data
+          badge.loc = siteAssignments[badge.id];
+          restoredAssignments++;
+        } else if (isAssignedInOtherSites) {
+          // Assigned in another site but belongs to current site - show as assigned elsewhere
+          badge.loc = 'assigned-elsewhere';
+        } else {
+          // Not assigned anywhere - show as unassigned
+          badge.loc = 'unassigned';
+        }
+      });
+      
+      // Restore previous suppress flag
+      STATE.suppressAnalytics = oldSuppressFlag;
+      
+      console.log(`[MULTISITE] Loaded site ${siteCode}: ${visibleBadges} visible badges, ${hiddenBadges} hidden, ${restoredAssignments} assignments restored`);
+    },
+    
+    // Clear all tile displays
+    clearAllTiles: function() {
+      Object.values(tileBadgeLayers).forEach(layer => {
+        if (layer) layer.innerHTML = '';
+      });
+    },
+    
+    // Move badge between sites
+    moveBadgeToSite: function(badgeId, targetSite, targetLocation) {
+      const badge = STATE.badges[badgeId];
+      if (!badge || !STATE.sites[targetSite]) return false;
+      
+      // Remove from current site assignments
+      Object.keys(STATE.sites).forEach(siteCode => {
+        delete STATE.sites[siteCode].assignments[badgeId];
+      });
+      
+      // Add to target site
+      STATE.sites[targetSite].assignments[badgeId] = targetLocation;
+      
+      // If target site is current site, update badge location
+      if (targetSite === STATE.currentSite) {
+        badge.loc = targetLocation;
+      }
+      
+      console.log(`[MULTISITE] Moved badge ${badgeId} to ${targetSite}/${targetLocation}`);
+      return true;
+    },
+    
+    // Sync current badge locations to multi-site assignments
+    syncCurrentAssignments: function() {
+      console.log('[MULTISITE] Syncing current badge locations to multi-site system...');
+      
+      // Clear all existing assignments
+      Object.keys(STATE.sites).forEach(siteCode => {
+        STATE.sites[siteCode].assignments = {};
+      });
+      
+      // Rebuild assignments from current badge locations
+      Object.values(STATE.badges).forEach(badge => {
+        if (badge.loc && badge.loc !== 'unassigned' && badge.loc !== 'assigned-elsewhere') {
+          // Assign to current site
+          const currentSite = STATE.currentSite;
+          STATE.sites[currentSite].assignments[badge.id] = badge.loc;
+          console.log(`[MULTISITE] Synced: ${badge.name} -> ${currentSite}/${badge.loc}`);
+        }
+      });
+      
+      console.log('[MULTISITE] Sync complete. STATE.sites:', STATE.sites);
+    },
+    
+    // Get which site a badge is currently assigned to
+    getBadgeAssignmentSite: function(badgeId) {
+      for (const [siteCode, siteData] of Object.entries(STATE.sites)) {
+        if (siteData.assignments && siteData.assignments[badgeId]) {
+          return siteCode;
+        }
+      }
+      return null; // Not assigned to any site
+    },
+    
+    // Get current assignment info for a badge
+    getBadgeAssignmentInfo: function(badgeId) {
+      for (const [siteCode, siteData] of Object.entries(STATE.sites)) {
+        if (siteData.assignments && siteData.assignments[badgeId]) {
+          return {
+            site: siteCode,
+            location: siteData.assignments[badgeId]
+          };
+        }
+      }
+      return null; // Not assigned anywhere
+    },
+    
+    // Save current multi-site state to localStorage
+    saveToStorage: function() {
+      try {
+        const raw = localStorage.getItem('vlab:lastRoster');
+        if (raw) {
+          const snap = JSON.parse(raw);
+          
+          // Update multi-site data
+          snap.sites = STATE.sites;
+          snap.currentSite = STATE.currentSite;
+          
+          // Update badge states (assignments)
+          snap.badges = STATE.badges;
+          
+          localStorage.setItem('vlab:lastRoster', JSON.stringify(snap));
+          
+          // Debug: Count assignments being saved
+          const assignedCount = Object.values(STATE.badges).filter(b => b.loc !== 'unassigned' && b.loc !== 'assigned-elsewhere').length;
+          console.debug('[MULTISITE] Saved multi-site state with', assignedCount, 'assigned badges to localStorage');
+          
+          // Specific YDD4 debugging
+          if (STATE.sites.YDD4) {
+            const ydd4AssignmentCount = Object.keys(STATE.sites.YDD4.assignments || {}).length;
+            console.log('[YDD4-SAVE] Saved YDD4 assignments:', ydd4AssignmentCount);
+            console.log('[YDD4-SAVE] YDD4 assignments data:', STATE.sites.YDD4.assignments);
+          }
+        } else {
+          console.warn('[MULTISITE] No existing roster snapshot found to update');
+        }
+      } catch(e) {
+        console.warn('[MULTISITE] Failed to save to localStorage:', e);
+      }
+    }
+  };
 
   // Analytics and Data Collection System
-  const ANALYTICS = window.ANALYTICS;
+  const ANALYTICS = {
+    // Track assignment changes
+    logAssignment: function(arg1, arg2, arg3, arg4, arg5) {
+      let badgeId, fromLoc, toLoc, timestamp, explicitSite;
+
+      // Handle polymorphic arguments (object vs positional)
+      if (typeof arg1 === 'object' && arg1 !== null) {
+         const opts = arg1;
+         badgeId = opts.badgeId;
+         fromLoc = opts.fromLocation || opts.fromLoc;
+         toLoc = opts.toLocation || opts.toLoc || opts.path;
+         timestamp = opts.timestamp ? new Date(opts.timestamp) : new Date();
+         explicitSite = opts.site;
+      } else {
+         badgeId = arg1;
+         fromLoc = arg2;
+         toLoc = arg3;
+         timestamp = arg4 ? new Date(arg4) : new Date();
+         explicitSite = arg5;
+      }
+
+      // Special case for "Site Switch" or "Board Clear" logs where badgeId is null
+      if (!badgeId && fromLoc && (fromLoc.startsWith('Site Switch') || fromLoc === 'Board Clear')) {
+          const logEntry = {
+            id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            timestamp: timestamp.toISOString(),
+            date: timestamp.toDateString(),
+            badgeId: 'SYSTEM',
+            employeeId: 'SYSTEM',
+            employeeName: 'SYSTEM',
+            shiftCode: 'N/A',
+            site: explicitSite || STATE.currentSite,
+            quarter: STATE.currentQuarter || 'Q1',
+            fromLocation: fromLoc,
+            toLocation: toLoc,
+            processPath: toLoc,
+            action: 'system_event',
+            duration: null,
+            sessionId: this.getCurrentSessionId()
+          };
+          STATE.analytics.history.push(logEntry);
+          return;
+      }
+
+      const badge = STATE.badges[badgeId];
+      if (!badge) {
+        console.warn('[Analytics] No badge found for logAssignment:', badgeId);
+        return;
+      }
+      
+      // Ensure current site is synchronized
+      MULTISITE.ensureCurrentSiteSync();
+      
+      // Get the site for this assignment
+      let assignmentSite = explicitSite;
+      
+      if (!assignmentSite) {
+          // Fallback logic if site not explicitly provided
+          assignmentSite = STATE.currentSite;
+          if (toLoc === 'unassigned') {
+            // If moving to unassigned, record the site they're being removed from
+            assignmentSite = MULTISITE.getBadgeAssignmentSite(badgeId) || STATE.currentSite;
+          }
+      }
+      
+      console.log(`[Analytics] Logging assignment: badge=${badgeId}, from=${fromLoc}, to=${toLoc}, site=${assignmentSite}`);
+      
+      // Fallback if site is still undefined
+      if (!assignmentSite || assignmentSite === 'undefined') {
+        assignmentSite = 'Unknown';
+        console.warn('[Analytics] Site was undefined, using fallback:', assignmentSite);
+      }
+      
+      const logEntry = {
+        id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        timestamp: timestamp.toISOString(),
+        date: timestamp.toDateString(),
+        badgeId: badgeId,
+        employeeId: badge.eid || badge.id, // Fallback to internal ID if EID is missing
+        employeeName: badge.name,
+        shiftCode: badge.scode,
+        site: assignmentSite,
+        quarter: STATE.currentQuarter || 'Q1',
+        fromLocation: fromLoc,
+        toLocation: toLoc,
+        processPath: getTilePathName(toLoc), // Store exact path name
+        action: fromLoc === 'unassigned' ? 'assign' : (toLoc === 'unassigned' ? 'unassign' : 'reassign'),
+        duration: null, // Will be calculated when assignment ends
+        sessionId: this.getCurrentSessionId()
+      };
+      
+      // Check for recent duplicate entries (within last 5 seconds)
+      const recent = STATE.analytics.history.filter(entry => {
+        const entryTime = new Date(entry.timestamp).getTime();
+        const currentTime = timestamp.getTime();
+        return (currentTime - entryTime) < 5000 && // within 5 seconds
+               entry.badgeId === badgeId && 
+               entry.employeeId === badge.eid &&
+               entry.toLocation === toLoc &&
+               entry.site === assignmentSite;
+      });
+      
+      // Only add if not a recent duplicate
+      if (recent.length === 0) {
+        STATE.analytics.history.push(logEntry);
+      } else {
+        console.log('[Analytics] Skipping duplicate log entry for', badge.name, toLoc);
+      }
+      this.updatePerformanceMetrics(badge.eid, logEntry);
+      this.saveAnalyticsData();
+      console.debug('[Analytics] Logged assignment:', logEntry);
+    },
+
+    // Track work sessions (full shifts)
+    startSession: function(metadata = {}) {
+      const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const session = {
+        id: sessionId,
+        startTime: new Date().toISOString(),
+        endTime: null,
+        date: metadata.date || new Date().toDateString(),
+        shift: metadata.shift || 'day',
+        site: metadata.site || 'Other',
+        plannedHC: metadata.plannedHC || 0,
+        actualHC: 0,
+        assignments: 0,
+        reassignments: 0,
+        efficiency: null,
+        notes: metadata.notes || ''
+      };
+      
+      STATE.analytics.sessions.push(session);
+      this.currentSessionId = sessionId;
+      this.saveAnalyticsData();
+      console.debug('[Analytics] Started session:', session);
+      return sessionId;
+    },
+
+    // End current work session
+    endSession: function() {
+      if (!this.currentSessionId) return;
+      
+      const session = STATE.analytics.sessions.find(s => s.id === this.currentSessionId);
+      if (!session) return;
+      
+      session.endTime = new Date().toISOString();
+      session.actualHC = Object.values(STATE.badges).filter(b => b.loc !== 'unassigned').length;
+      
+      // Calculate session metrics
+      const sessionHistory = STATE.analytics.history.filter(h => h.sessionId === this.currentSessionId);
+      session.assignments = sessionHistory.filter(h => h.action === 'assign').length;
+      session.reassignments = sessionHistory.filter(h => h.action === 'reassign').length;
+      session.efficiency = session.plannedHC > 0 ? (session.actualHC / session.plannedHC * 100).toFixed(2) : 0;
+      
+      this.saveAnalyticsData();
+      console.debug('[Analytics] Ended session:', session);
+      this.currentSessionId = null;
+    },
+
+    getCurrentSessionId: function() {
+      return this.currentSessionId || null;
+    },
+
+    // Update employee performance metrics
+    updatePerformanceMetrics: function(employeeId, logEntry) {
+      if (!employeeId || !logEntry) return;
+      
+      if (!STATE.analytics.performance[employeeId]) {
+        STATE.analytics.performance[employeeId] = {
+          employeeId: employeeId,
+          name: logEntry.employeeName,
+          totalAssignments: 0,
+          processExperience: {}, // Track which processes they've worked
+          shiftPreference: {}, // Track shift performance
+          avgAssignmentDuration: 0,
+          performanceScore: 0,
+          reliability: 0,
+          versatility: 0,
+          lastActive: null,
+          weeklyStats: {}, // Track performance by week
+          productivityTrends: [], // Track assignment frequency over time
+          collaborationScore: 0, // How well they work in teams
+          adaptabilityScore: 0, // How quickly they learn new processes
+          consistencyScore: 0, // How consistent their performance is
+          peakPerformanceHours: {}, // Best performance times
+          trainingNeeds: [], // Identified skills gaps
+          strengths: [] // Identified strengths
+        };
+      }
+      
+      const metrics = STATE.analytics.performance[employeeId];
+      metrics.totalAssignments++;
+      metrics.lastActive = logEntry.timestamp;
+      
+      // Track process experience and calculate proficiency
+      if (logEntry.toLocation && logEntry.toLocation !== 'unassigned') {
+        if (!metrics.processExperience[logEntry.toLocation]) {
+          metrics.processExperience[logEntry.toLocation] = 0;
+        }
+        metrics.processExperience[logEntry.toLocation]++;
+        
+        // Update process proficiency levels
+        const assignments = metrics.processExperience[logEntry.toLocation];
+        let proficiencyLevel = 'Beginner';
+        if (assignments >= 20) proficiencyLevel = 'Expert';
+        else if (assignments >= 10) proficiencyLevel = 'Intermediate';
+        else if (assignments >= 5) proficiencyLevel = 'Competent';
+        
+        // Track strengths (processes with high proficiency)
+        if (proficiencyLevel === 'Expert' && !metrics.strengths.includes(logEntry.toLocation)) {
+          metrics.strengths.push(logEntry.toLocation);
+        }
+      }
+      
+      // Track shift patterns and peak hours
+      if (logEntry.shiftCode) {
+        if (!metrics.shiftPreference[logEntry.shiftCode]) {
+          metrics.shiftPreference[logEntry.shiftCode] = 0;
+        }
+        metrics.shiftPreference[logEntry.shiftCode]++;
+        
+        // Track peak performance hours
+        const hour = new Date(logEntry.timestamp).getHours();
+        if (!metrics.peakPerformanceHours[hour]) {
+          metrics.peakPerformanceHours[hour] = 0;
+        }
+        metrics.peakPerformanceHours[hour]++;
+      }
+      
+      // Update weekly statistics
+      const weekKey = this.getWeekKey(new Date(logEntry.timestamp));
+      if (!metrics.weeklyStats[weekKey]) {
+        metrics.weeklyStats[weekKey] = {
+          assignments: 0,
+          processes: new Set(),
+          efficiency: 0,
+          reliability: 0
+        };
+      }
+      
+      // Ensure processes is always a Set (fix for deserialization issues)
+      if (!(metrics.weeklyStats[weekKey].processes instanceof Set)) {
+        const existingProcesses = metrics.weeklyStats[weekKey].processes || [];
+        metrics.weeklyStats[weekKey].processes = new Set(Array.isArray(existingProcesses) ? existingProcesses : Object.keys(existingProcesses));
+      }
+      
+      metrics.weeklyStats[weekKey].assignments++;
+      if (logEntry.toLocation !== 'unassigned') {
+        metrics.weeklyStats[weekKey].processes.add(logEntry.toLocation);
+      }
+      
+      // Calculate dynamic scores
+      metrics.versatility = Object.keys(metrics.processExperience).length;
+      metrics.adaptabilityScore = this.calculateAdaptabilityScore(metrics);
+      metrics.consistencyScore = this.calculateConsistencyScore(metrics);
+      metrics.collaborationScore = this.calculateCollaborationScore(employeeId);
+      
+      // Enhanced performance score calculation
+      metrics.performanceScore = Math.min(100, 
+        (metrics.totalAssignments * 1.5) + 
+        (metrics.versatility * 8) + 
+        (metrics.reliability * 12) +
+        (metrics.adaptabilityScore * 0.2) +
+        (metrics.consistencyScore * 0.15) +
+        (metrics.collaborationScore * 0.1)
+      );
+      
+      // Identify training needs based on low-experience processes
+      metrics.trainingNeeds = this.identifyTrainingNeeds(metrics);
+      
+      // Track productivity trends
+      metrics.productivityTrends.push({
+        timestamp: logEntry.timestamp,
+        assignments: metrics.totalAssignments,
+        score: metrics.performanceScore
+      });
+      
+      // Keep only last 30 productivity data points
+      if (metrics.productivityTrends.length > 30) {
+        metrics.productivityTrends = metrics.productivityTrends.slice(-30);
+      }
+    },
+
+    // Calculate adaptability score based on learning curve
+    calculateAdaptabilityScore: function(metrics) {
+      const processes = Object.entries(metrics.processExperience);
+      if (processes.length === 0) return 0;
+      
+      let adaptabilitySum = 0;
+      processes.forEach(([process, count]) => {
+        // Higher score for quickly ramping up in new processes
+        if (count <= 5) adaptabilitySum += count * 20; // Early learning bonus
+        else adaptabilitySum += 100; // Full competency reached
+      });
+      
+      return Math.min(100, adaptabilitySum / processes.length);
+    },
+
+    // Calculate consistency score based on assignment patterns
+    calculateConsistencyScore: function(metrics) {
+      const trends = metrics.productivityTrends;
+      if (trends.length < 5) return 50; // Default for insufficient data
+      
+      // Calculate variance in performance
+      const scores = trends.map(t => t.score);
+      const avg = scores.reduce((sum, score) => sum + score, 0) / scores.length;
+      const variance = scores.reduce((sum, score) => sum + Math.pow(score - avg, 2), 0) / scores.length;
+      
+      // Lower variance = higher consistency
+      return Math.max(0, 100 - variance);
+    },
+
+    // Calculate collaboration score based on team assignments
+    calculateCollaborationScore: function(employeeId) {
+      // Calculate based on how often they work alongside others in same processes
+      const employeeHistory = STATE.analytics.history.filter(h => h.employeeId === employeeId);
+      let collaborationEvents = 0;
+      
+      employeeHistory.forEach(entry => {
+        // Count assignments to processes where others are also assigned
+        const sameTimeAssignments = STATE.analytics.history.filter(h => 
+          h.toLocation === entry.toLocation && 
+          Math.abs(new Date(h.timestamp) - new Date(entry.timestamp)) < 60000 && // Within 1 minute
+          h.employeeId !== employeeId
+        );
+        collaborationEvents += sameTimeAssignments.length;
+      });
+      
+      return Math.min(100, collaborationEvents * 5); // Scale to 0-100
+    },
+
+    // Identify training needs based on process gaps
+    identifyTrainingNeeds: function(metrics) {
+      const allProcesses = ['cb', 'ibws', 'lineloaders', 'trickle', 'dm', 'idrt', 'pb', 'e2s', 'dockws', 'e2sws', 'tpb', 'tws', 'sap', 'ao5s', 'pa', 'ps', 'laborshare'];
+      const experienced = Object.keys(metrics.processExperience);
+      const gaps = allProcesses.filter(process => !experienced.includes(process));
+      
+      return gaps.slice(0, 3); // Return top 3 training opportunities
+    },
+
+    // Get week key for grouping statistics
+    getWeekKey: function(date) {
+      const year = date.getFullYear();
+      const week = Math.ceil((date - new Date(year, 0, 1)) / (7 * 24 * 60 * 60 * 1000));
+      return `${year}-W${week}`;
+    },
+
+    // Save analytics data to localStorage
+    saveAnalyticsData: function() {
+      try {
+        // Create a deep copy and convert Set objects to arrays for serialization
+        const analyticsToSave = JSON.parse(JSON.stringify(STATE.analytics, (key, value) => {
+          if (value instanceof Set) {
+            return Array.from(value);
+          }
+          return value;
+        }));
+        
+        localStorage.setItem('vlab:analytics', JSON.stringify(analyticsToSave));
+        console.debug('[Analytics] Saved analytics data to localStorage');
+      } catch (error) {
+        console.warn('[Analytics] Failed to save analytics data:', error);
+      }
+    },
+
+    // Load analytics data from localStorage
+    loadAnalyticsData: function() {
+      try {
+        const data = localStorage.getItem('vlab:analytics');
+        if (data) {
+          const parsed = JSON.parse(data);
+          STATE.analytics = {
+            history: parsed.history || [],
+            sessions: parsed.sessions || [],
+            performance: parsed.performance || {},
+            patterns: parsed.patterns || {}
+          };
+          
+          // Fix Set objects that were serialized as arrays/objects
+          Object.values(STATE.analytics.performance).forEach(perf => {
+            if (perf.weeklyStats) {
+              Object.values(perf.weeklyStats).forEach(weekStat => {
+                if (weekStat.processes && !(weekStat.processes instanceof Set)) {
+                  // Convert back to Set if it was serialized as array or object
+                  weekStat.processes = new Set(Array.isArray(weekStat.processes) ? weekStat.processes : Object.keys(weekStat.processes));
+                }
+              });
+            }
+          });
+          
+          console.debug('[Analytics] Loaded analytics data from localStorage');
+        }
+      } catch (error) {
+        console.warn('[Analytics] Failed to load analytics data:', error);
+        STATE.analytics = {
+          history: [],
+          sessions: [],
+          performance: {},
+          patterns: {}
+        };
+      }
+    },
+
+    // Enhanced assignment recommendations with AI-like scoring
+    getRecommendations: function(processPath, requirements = {}) {
+      const recommendations = [];
+      const employees = Object.values(STATE.analytics.performance);
+      const currentAssignments = Object.values(STATE.badges).filter(b => b.loc === processPath);
+      
+      employees.forEach(emp => {
+        // Skip if employee is already assigned to this process
+        if (currentAssignments.some(badge => badge.eid === emp.employeeId)) {
+          return;
+        }
+        
+        let score = 0;
+        let reasoning = [];
+        
+        // 1. Process Experience (30% weight)
+        const processExp = emp.processExperience[processPath] || 0;
+        const experienceScore = Math.min(30, processExp * 3);
+        score += experienceScore;
+        
+        if (processExp >= 10) reasoning.push('Highly experienced');
+        else if (processExp >= 5) reasoning.push('Experienced');
+        else if (processExp > 0) reasoning.push('Some experience');
+        else reasoning.push('Cross-training opportunity');
+        
+        // 2. Performance Score (25% weight)
+        const performanceWeight = (emp.performanceScore / 100) * 25;
+        score += performanceWeight;
+        
+        if (emp.performanceScore >= 85) reasoning.push('Top performer');
+        else if (emp.performanceScore >= 70) reasoning.push('Strong performer');
+        
+        // 3. Versatility and Adaptability (20% weight)
+        const versatilityScore = Math.min(20, emp.versatility * 2);
+        const adaptabilityScore = (emp.adaptabilityScore / 100) * 10;
+        score += versatilityScore + adaptabilityScore;
+        
+        if (emp.versatility >= 8) reasoning.push('Highly versatile');
+        if (emp.adaptabilityScore >= 80) reasoning.push('Quick learner');
+        
+        // 4. Recent Activity and Availability (15% weight)
+        if (emp.lastActive) {
+          const daysSinceActive = (new Date() - new Date(emp.lastActive)) / (1000 * 60 * 60 * 24);
+          if (daysSinceActive < 1) score += 15; // Very recent
+          else if (daysSinceActive < 7) score += 10;
+          else if (daysSinceActive < 30) score += 5;
+          
+          if (daysSinceActive < 7) reasoning.push('Recently active');
+        }
+        
+        // 5. Consistency and Reliability (10% weight)
+        const consistencyScore = (emp.consistencyScore / 100) * 10;
+        score += consistencyScore;
+        
+        if (emp.consistencyScore >= 80) reasoning.push('Highly consistent');
+        
+        // 6. Workload Balance Adjustment
+        const currentLoad = Object.values(STATE.badges).filter(b => b.eid === emp.employeeId && b.loc !== 'unassigned').length;
+        if (currentLoad === 0) score += 10; // Bonus for unassigned employees
+        else if (currentLoad >= 2) score -= 5; // Penalty for overloaded employees
+        
+        if (currentLoad === 0) reasoning.push('Available');
+        else if (currentLoad >= 2) reasoning.push('Currently busy');
+        
+        // 7. Time-based Performance Patterns
+        const currentHour = new Date().getHours();
+        const hourlyPerformance = emp.peakPerformanceHours[currentHour] || 0;
+        if (hourlyPerformance > 0) {
+          score += Math.min(5, hourlyPerformance * 0.5);
+          reasoning.push('Peak performance time');
+        }
+        
+        // 8. Team Synergy (if requirements specify team needs)
+        if (requirements.teamSynergy && emp.collaborationScore >= 70) {
+          score += 8;
+          reasoning.push('Strong team player');
+        }
+        
+        // 9. Skill Gap Analysis
+        if (requirements.skillDevelopment && emp.trainingNeeds.includes(processPath)) {
+          score += 12; // Bonus for addressing skill gaps
+          reasoning.push('Skill development opportunity');
+        }
+        
+        // 10. Fair Rotation Bonus
+        if (ANALYTICS.ROTATION && emp.employeeId) {
+          const rotationScore = ANALYTICS.ROTATION.calculateRotationScore(emp.employeeId);
+          const processExp = emp.processExperience[processPath] || 0;
+          
+          // Bonus for employees with poor rotation who need variety
+          if (rotationScore.status === 'poor' && processExp < 3) {
+            score += 15;
+            reasoning.push('Rotation fairness priority');
+          } else if (rotationScore.status === 'needs_improvement' && processExp === 0) {
+            score += 8;
+            reasoning.push('Improve rotation variety');
+          }
+          
+          // Slight penalty for employees with excellent rotation in processes they know well
+          if (rotationScore.status === 'excellent' && processExp > 10) {
+            score -= 3;
+            reasoning.push('Consider rotation balance');
+          }
+        }
+        
+        // 11. Shift Preference Alignment
+        const badge = Object.values(STATE.badges).find(b => b.eid === emp.employeeId);
+        if (badge && badge.scode) {
+          const shiftType = badge.scode.toUpperCase().startsWith('N') ? 'night' : 'day';
+          const preferenceCount = emp.shiftPreference[badge.scode] || 0;
+          if (preferenceCount > 5) {
+            score += 5;
+            reasoning.push('Preferred shift pattern');
+          }
+        }
+        
+        // Calculate confidence level
+        let confidence = 'Low';
+        if (score >= 80) confidence = 'Very High';
+        else if (score >= 65) confidence = 'High';
+        else if (score >= 45) confidence = 'Medium';
+        
+        // Risk assessment
+        let riskLevel = 'Low';
+        if (processExp === 0 && emp.adaptabilityScore < 50) riskLevel = 'High';
+        else if (processExp < 3) riskLevel = 'Medium';
+        
+        recommendations.push({
+          employeeId: emp.employeeId,
+          name: emp.name,
+          score: Math.round(score * 10) / 10, // Round to 1 decimal
+          processExp: processExp,
+          versatility: emp.versatility,
+          confidence: confidence,
+          riskLevel: riskLevel,
+          reasoning: reasoning.slice(0, 3), // Top 3 reasons
+          fullReason: reasoning.join(', '),
+          performanceScore: emp.performanceScore,
+          currentLoad: currentLoad,
+          adaptabilityScore: emp.adaptabilityScore,
+          consistencyScore: emp.consistencyScore
+        });
+      });
+      
+      // Sort by score and return top recommendations
+      const sortedRecommendations = recommendations.sort((a, b) => b.score - a.score);
+      
+      // Add ranking information
+      sortedRecommendations.forEach((rec, index) => {
+        rec.rank = index + 1;
+        rec.percentile = ((sortedRecommendations.length - index) / sortedRecommendations.length * 100).toFixed(0);
+      });
+      
+      return sortedRecommendations.slice(0, 10); // Return top 10 recommendations
+    },
+
+    // Get bulk assignment recommendations for multiple processes
+    getBulkRecommendations: function(processList, requirements = {}) {
+      const bulkRecommendations = {};
+      const usedEmployees = new Set();
+      
+      // Prioritize processes by current need (fewer assigned employees = higher priority)
+      const processNeeds = processList.map(process => ({
+        process,
+        currentCount: Object.values(STATE.badges).filter(b => b.loc === process).length,
+        targetCount: requirements.targets ? requirements.targets[process] : 3
+      })).sort((a, b) => (a.currentCount - a.targetCount) - (b.currentCount - b.targetCount));
+      
+      processNeeds.forEach(({ process, targetCount, currentCount }) => {
+        const needed = Math.max(0, targetCount - currentCount);
+        if (needed > 0) {
+          // Get recommendations excluding already used employees
+          const availableEmployees = Object.values(STATE.analytics.performance)
+            .filter(emp => !usedEmployees.has(emp.employeeId));
+          
+          const processRecommendations = this.getRecommendations(process, requirements)
+            .filter(rec => !usedEmployees.has(rec.employeeId))
+            .slice(0, needed);
+          
+          bulkRecommendations[process] = processRecommendations;
+          
+          // Mark top recommendations as used to avoid conflicts
+          processRecommendations.slice(0, Math.min(needed, 2)).forEach(rec => {
+            usedEmployees.add(rec.employeeId);
+          });
+        }
+      });
+      
+      return bulkRecommendations;
+    },
+
+    // Analyze assignment optimization opportunities
+    getOptimizationSuggestions: function() {
+      const suggestions = [];
+      const currentAssignments = {};
+      
+      // Group current assignments by location
+      Object.values(STATE.badges).forEach(badge => {
+        if (badge.loc && badge.loc !== 'unassigned') {
+          if (!currentAssignments[badge.loc]) {
+            currentAssignments[badge.loc] = [];
+          }
+          currentAssignments[badge.loc].push(badge);
+        }
+      });
+      
+      // Analyze each process for optimization opportunities
+      Object.entries(currentAssignments).forEach(([process, badges]) => {
+        badges.forEach(badge => {
+          const empPerformance = STATE.analytics.performance[badge.eid];
+          if (!empPerformance) return;
+          
+          const processExp = empPerformance.processExperience[process] || 0;
+          const recommendations = this.getRecommendations(process);
+          const currentEmployeeRank = recommendations.findIndex(rec => rec.employeeId === badge.eid) + 1;
+          
+          // Suggest optimization if current employee is not in top 3 recommendations
+          if (currentEmployeeRank > 3 && recommendations[0] && recommendations[0].score > 60) {
+            suggestions.push({
+              type: 'reassignment',
+              priority: currentEmployeeRank > 5 ? 'high' : 'medium',
+              process: process,
+              currentEmployee: badge.name,
+              suggestedEmployee: recommendations[0].name,
+              reason: `${recommendations[0].name} would be ${(recommendations[0].score - (empPerformance.performanceScore || 0)).toFixed(1)} points better for ${process}`,
+              confidenceGain: recommendations[0].confidence,
+              riskReduction: recommendations[0].riskLevel === 'Low' ? 'Yes' : 'No'
+            });
+          }
+        });
+      });
+      
+      // Suggest assignments for unassigned high performers
+      const unassigned = Object.values(STATE.badges).filter(b => b.loc === 'unassigned');
+      const highPerformers = unassigned.filter(badge => {
+        const emp = STATE.analytics.performance[badge.eid];
+        return emp && emp.performanceScore >= 75;
+      });
+      
+      highPerformers.forEach(badge => {
+        const emp = STATE.analytics.performance[badge.eid];
+        const bestProcesses = Object.entries(emp.processExperience)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3);
+        
+        if (bestProcesses.length > 0) {
+          suggestions.push({
+            type: 'assignment',
+            priority: 'medium',
+            employee: badge.name,
+            suggestedProcess: bestProcesses[0][0],
+            reason: `High performer with ${bestProcesses[0][1]} assignments in ${bestProcesses[0][0]}`,
+            expectedImpact: 'Increase process efficiency'
+          });
+        }
+      });
+      
+      return suggestions.sort((a, b) => {
+        const priorityOrder = { high: 3, medium: 2, low: 1 };
+        return priorityOrder[b.priority] - priorityOrder[a.priority];
+      }).slice(0, 8); // Return top 8 suggestions
+    },
+
+    currentSessionId: null,
+
+    /* ═══════════════════════════════════════════════════════════════════════════
+     * 🔄 FAIR ROTATION SYSTEM - Amazon-Style Assignment Fairness Engine
+     * ═══════════════════════════════════════════════════════════════════════════
+     * 
+     * PURPOSE:
+     * Ensures fair exposure to all process paths over time by:
+     * - Preventing same people from getting same roles daily
+     * - Ensuring equal training opportunities across Pick/Sort/Dock/CB/etc
+     * - Reducing favoritism perceptions through objective scoring
+     * - Maintaining skill balance across all operations
+     * 
+     * CORE PRINCIPLE:
+     * 📌 Fewer recent turns → higher priority today
+     * 
+     * ROTATION SCORE FORMULA:
+     * For each associate (a) and path (p):
+     * 
+     *   PriorityScore = (GapBonus + NewHireBoost + SkillBonus) - (RecencyPenalty + FrequencyPenalty + WeeklyCapPenalty)
+     * 
+     * 1️⃣ RECENCY PENALTY = 1 / (Days since last assignment to p)
+     *    - Yesterday = 1/1 = 1.0 penalty
+     *    - 10 days ago = 1/10 = 0.1 penalty
+     *    - SPECIAL RULE: Same path 2 days in row = +5 huge penalty
+     * 
+     * 2️⃣ FREQUENCY PENALTY = Count(path assignments last 14 days) × 0.5
+     *    - 5 times in 14 days = 2.5 penalty
+     *    - 0 times = 0 penalty
+     * 
+     * 3️⃣ WEEKLY CAP PENALTY = +5 if assigned >3 times in last 7 days
+     *    - Prevents weekly overuse of same person in same path
+     * 
+     * 4️⃣ GAP BONUS = log(1 + days_since_last_assignment)
+     *    - 20 days gap = log(21) = ~3.0 bonus
+     *    - Never assigned = log(31) = ~3.4 bonus
+     * 
+     * 5️⃣ NEW HIRE BOOST = +3 for untrained paths (total assignments < 10)
+     *    - Aggressive cross-training for new associates
+     * 
+     * 6️⃣ SKILL BONUS = +1 for certified but under-used paths
+     *    - Keeps experienced people engaged in their trained areas
+     * 
+     * FAIRNESS SCORE (Per Associate):
+     * - Variance of work distribution across all paths
+     * - Low variance = balanced opportunities
+     * - High variance = stuck in same work zone
+     * 
+     * USAGE:
+     * - Auto-assignment uses rotation scores to pick candidates
+     * - Analytics tab shows top recommendations per path
+     * - Fairness alerts flag overuse and neglect issues
+     * ═══════════════════════════════════════════════════════════════════════════ */
+    
+    ROTATION: {
+      // Configuration for Process Tiers and Role Types
+      CONFIG: {
+        TIERS: {
+          'LINELOADERS': 3, 'PB': 3,
+          'IBWS': 2, 'IDRT': 2, 'DOCKWS': 2, 'E2SWS': 2, 'TPB': 2, 'SAP': 2,
+          'TRICKLE': 1, 'DM': 1, 'E2S': 1, 'TWS': 1, 'AO5S': 1,
+          'CB': 2 // Treating Critical as Tier 2 for fatigue balancing unless specified
+        },
+        TYPES: {
+          'IBWS': 'INDIRECT', 'DOCKWS': 'INDIRECT', 'E2SWS': 'INDIRECT', 'TWS': 'INDIRECT', 'AO5S': 'INDIRECT'
+        },
+        CRITICAL: new Set(['CB'])
+      },
+
+      // Core rotation scoring engine - calculates priority for each associate-path pair
+      calculateEnhancedRotationScore: function(employeeId, processPath) {
+        const emp = STATE.analytics.performance[employeeId];
+        // if (!emp) return { priorityScore: 0, details: {} }; // Allow scoring even if no perf record yet
+        
+        const now = Date.now();
+        const DAY_MS = 24 * 60 * 60 * 1000;
+        
+        // Get all assignments for this employee to this specific path
+        const pathHistory = STATE.analytics.history.filter(h => 
+          h.employeeId === employeeId && 
+          h.toLocation === processPath &&
+          h.action !== 'unassign'
+        );
+
+        // Get OVERALL history for this employee (any path) to check previous role
+        const overallHistory = STATE.analytics.history.filter(h => 
+          h.employeeId === employeeId && 
+          h.action !== 'unassign' &&
+          h.toLocation !== 'unassigned'
+        ).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        
+        const lastAssignment = overallHistory.length > 0 ? overallHistory[overallHistory.length - 1] : null;
+        
+        // 1️⃣ RECENCY PENALTY - penalizes recent assignments
+        let recencyPenalty = 0;
+        if (pathHistory.length > 0) {
+          const lastAssignment = pathHistory[pathHistory.length - 1];
+          const daysSinceLastAssignment = Math.max(1, (now - new Date(lastAssignment.timestamp).getTime()) / DAY_MS);
+          recencyPenalty = 1 / daysSinceLastAssignment;
+          
+          // Special Rule: No same path 2 days in a row (+5 huge penalty)
+          if (daysSinceLastAssignment < 1.5) {
+            recencyPenalty += 5;
+          }
+        }
+        
+        // 2️⃣ FREQUENCY PENALTY - penalizes over-assignment in recent window
+        const LOOKBACK_DAYS = 14;
+        const cutoffTime = now - (LOOKBACK_DAYS * DAY_MS);
+        const recentAssignments = pathHistory.filter(h => new Date(h.timestamp).getTime() >= cutoffTime);
+        const frequencyPenalty = recentAssignments.length * 0.5;
+        
+        // Weekly cap rule: >3 times in 7 days adds extra penalty
+        const WEEK_LOOKBACK = 7;
+        const weekCutoff = now - (WEEK_LOOKBACK * DAY_MS);
+        const weeklyCount = pathHistory.filter(h => new Date(h.timestamp).getTime() >= weekCutoff).length;
+        let weeklyCapPenalty = 0;
+        if (weeklyCount >= 3) {
+          weeklyCapPenalty = 5;
+        }
+        
+        // 3️⃣ GAP BONUS - rewards long absence from path
+        let gapBonus = 0;
+        if (pathHistory.length > 0) {
+          const lastAssignment = pathHistory[pathHistory.length - 1];
+          const daysSinceLastAssignment = (now - new Date(lastAssignment.timestamp).getTime()) / DAY_MS;
+          gapBonus = Math.log(1 + daysSinceLastAssignment);
+        } else {
+          // Never assigned to this path - huge bonus
+          gapBonus = Math.log(1 + 30); // Equivalent to 30 days gap
+        }
+        
+        // 4️⃣ NEW ASSOCIATE BOOST - cross-training priority
+        const totalAssignments = emp ? (emp.totalAssignments || 0) : 0;
+        let newHireBoost = 0;
+        if (totalAssignments < 10 && !pathHistory.length) {
+          newHireBoost = 3; // Boost for untrained paths
+        }
+        
+        // 5️⃣ SKILL CERTIFICATION (optional - can be enhanced with actual cert data)
+        // For now, we'll use experience as proxy
+        let skillBonus = 0;
+        if (emp) {
+            const pathExp = emp.processExperience[processPath] || 0;
+            if (pathExp > 0 && pathExp < 5) {
+            // Certified but under-used - bonus
+            skillBonus = 1;
+            }
+        }
+
+        // --- NEW RULES: FATIGUE & INDIRECT ---
+        let fatiguePenalty = 0;
+        let indirectPenalty = 0;
+
+        const targetTier = this.CONFIG.TIERS[processPath.toUpperCase()] || 1; // Default to 1 if unknown
+        const targetType = this.CONFIG.TYPES[processPath.toUpperCase()] || 'DIRECT';
+
+        if (lastAssignment) {
+            const lastPath = lastAssignment.toLocation;
+            const lastTier = this.CONFIG.TIERS[lastPath.toUpperCase()] || 1;
+            const lastType = this.CONFIG.TYPES[lastPath.toUpperCase()] || 'DIRECT';
+
+            // Rule 1: Fatigue Management (3-to-1 Rule)
+            // If previous was Tier 3, next MUST be Tier 1 or 2.
+            // Penalize Tier 3 heavily if previous was Tier 3.
+            if (lastTier === 3 && targetTier === 3) {
+                fatiguePenalty = 10; // Massive penalty to prevent back-to-back Tier 3
+            }
+
+            // Rule 2: Indirect Role Limits
+            // Associate cannot work back to back in indirect roles.
+            if (lastType === 'INDIRECT' && targetType === 'INDIRECT') {
+                indirectPenalty = 10; // Massive penalty to prevent back-to-back Indirect
+            }
+        }
+        
+        // FINAL PRIORITY SCORE (higher = assign first)
+        const priorityScore = (gapBonus + newHireBoost + skillBonus) - (recencyPenalty + frequencyPenalty + weeklyCapPenalty + fatiguePenalty + indirectPenalty);
+        
+        return {
+          priorityScore: priorityScore,
+          details: {
+            recencyPenalty: recencyPenalty.toFixed(2),
+            frequencyPenalty: frequencyPenalty.toFixed(2),
+            weeklyCapPenalty: weeklyCapPenalty.toFixed(2),
+            gapBonus: gapBonus.toFixed(2),
+            newHireBoost: newHireBoost,
+            skillBonus: skillBonus,
+            fatiguePenalty: fatiguePenalty,
+            indirectPenalty: indirectPenalty,
+            daysSinceLast: pathHistory.length ? Math.round((now - new Date(pathHistory[pathHistory.length - 1].timestamp).getTime()) / DAY_MS) : 'Never',
+            recentCount14d: recentAssignments.length,
+            weeklyCount: weeklyCount,
+            totalPathAssignments: pathHistory.length
+          }
+        };
+      },
+      
+      // Get ranked candidates for a specific process path
+      getRankedCandidatesForPath: function(processPath, options = {}) {
+        const candidates = [];
+        
+        // Get all badges eligible for this path
+        const allBadges = Object.values(STATE.badges).filter(b => {
+          // Filter by site if specified
+          if (options.site && b.site !== options.site) return false;
+          // Filter by shift if specified
+          if (options.shift) {
+            const shiftSet = options.shift === 'day' ? DAY_SET : NIGHT_SET;
+            if (!shiftSet.has(b.scode)) return false;
+          }
+          // Exclude already assigned (unless override)
+          if (!options.includeAssigned && b.loc !== 'unassigned') return false;
+          return true;
+        });
+        
+        // Calculate priority score for each candidate
+        allBadges.forEach(badge => {
+          const score = this.calculateEnhancedRotationScore(badge.eid, processPath);
+          candidates.push({
+            badgeId: badge.id,
+                employeeId: badge.eid,
+            name: badge.name,
+            scode: badge.scode,
+            site: badge.site,
+            currentLocation: badge.loc,
+            priorityScore: score.priorityScore,
+            scoreDetails: score.details
+          });
+        });
+        
+        // Sort by priority score DESC (highest first)
+        candidates.sort((a, b) => b.priorityScore - a.priorityScore);
+        
+        return candidates;
+      },
+      
+      // Generate rotation recommendations for all paths
+      generatePathRecommendations: function(options = {}) {
+        const allPaths = ['cb', 'ibws', 'lineloaders', 'trickle', 'dm', 'idrt', 'pb', 'e2s', 'dockws', 'e2sws', 'tpb', 'tws', 'sap', 'ao5s', 'pa', 'ps', 'laborshare'];
+        const recommendations = {};
+        
+        allPaths.forEach(path => {
+          const candidates = this.getRankedCandidatesForPath(path, options);
+          recommendations[path] = {
+            pathName: path.toUpperCase(),
+            topCandidates: candidates.slice(0, 10), // Top 10 for each path
+            totalEligible: candidates.length
+          };
+        });
+        
+        return recommendations;
+      },
+      
+      // Calculate fairness variance for an associate
+      calculateFairnessScore: function(employeeId) {
+        const emp = STATE.analytics.performance[employeeId];
+        if (!emp) return { fairnessScore: 0, variance: 0, status: 'unknown' };
+        
+        const processExp = emp.processExperience || {};
+        const counts = Object.values(processExp);
+        
+        if (counts.length === 0) {
+          return { fairnessScore: 100, variance: 0, status: 'new', distribution: {} };
+        }
+        
+        // Calculate mean
+        const mean = counts.reduce((sum, c) => sum + c, 0) / counts.length;
+        
+        // Calculate variance
+        const variance = counts.reduce((sum, c) => sum + Math.pow(c - mean, 2), 0) / counts.length;
+        
+        // Normalize variance to 0-100 scale (lower variance = higher fairness)
+        const fairnessScore = Math.max(0, 100 - (variance * 2));
+        
+        let status = 'balanced';
+        if (variance > 20) status = 'unbalanced';
+        else if (variance > 10) status = 'needs_attention';
+        else if (variance < 3) status = 'excellent';
+        
+        return {
+          fairnessScore: Math.round(fairnessScore),
+          variance: variance.toFixed(2),
+          status: status,
+          distribution: processExp,
+          mean: mean.toFixed(1)
+        };
+      },
+      
+      // Generate fairness alerts for all associates
+      generateFairnessAlerts: function() {
+        const alerts = [];
+        
+        Object.values(STATE.analytics.performance).forEach(emp => {
+          const fairness = this.calculateFairnessScore(emp.employeeId);
+          const processExp = emp.processExperience || {};
+          
+          // Alert: High frequency in one path
+          Object.entries(processExp).forEach(([path, count]) => {
+            const WEEK_LOOKBACK = 7;
+            const weekCutoff = Date.now() - (WEEK_LOOKBACK * 24 * 60 * 60 * 1000);
+            const weeklyAssignments = STATE.analytics.history.filter(h =>
+              h.employeeId === emp.employeeId &&
+              h.toLocation === path &&
+              new Date(h.timestamp).getTime() >= weekCutoff
+            );
+            
+            if (weeklyAssignments.length >= 6) {
+              alerts.push({
+                type: 'overuse',
+                severity: 'high',
+                employeeId: emp.employeeId,
+                employeeName: emp.name,
+                message: `${emp.name} has done ${path.toUpperCase()} ${weeklyAssignments.length} times this week. Needs rotation.`,
+                path: path,
+                count: weeklyAssignments.length
+              });
+            }
+          });
+          
+          // Alert: Long gap without assignment to a path
+          const allPaths = ['cb', 'ibws', 'lineloaders', 'trickle', 'dm', 'idrt', 'pb', 'e2s', 'dockws', 'e2sws', 'tpb', 'tws', 'sap', 'ao5s', 'pa', 'ps'];
+          allPaths.forEach(path => {
+            const pathHistory = STATE.analytics.history.filter(h =>
+              h.employeeId === emp.employeeId &&
+              h.toLocation === path
+            );
+            
+            if (pathHistory.length > 0) {
+              const lastAssignment = pathHistory[pathHistory.length - 1];
+              const daysSince = (Date.now() - new Date(lastAssignment.timestamp).getTime()) / (24 * 60 * 60 * 1000);
+              
+              if (daysSince > 21) {
+                alerts.push({
+                  type: 'neglect',
+                  severity: 'medium',
+                  employeeId: emp.employeeId,
+                  employeeName: emp.name,
+                  message: `${emp.name} has not done ${path.toUpperCase()} in ${Math.round(daysSince)} days. High priority for rotation.`,
+                  path: path,
+                  daysSince: Math.round(daysSince)
+                });
+              }
+            }
+          });
+          
+          // Alert: Poor overall fairness
+          if (fairness.status === 'unbalanced') {
+            alerts.push({
+              type: 'fairness',
+              severity: 'medium',
+              employeeId: emp.employeeId,
+              employeeName: emp.name,
+              message: `${emp.name} has unbalanced work distribution (variance: ${fairness.variance}). Review rotation.`,
+              variance: fairness.variance
+            });
+          }
+        });
+        
+        // Sort by severity
+        const severityOrder = { high: 3, medium: 2, low: 1 };
+        alerts.sort((a, b) => severityOrder[b.severity] - severityOrder[a.severity]);
+        
+        return alerts;
+      },
+      
+      // Lock current assignments and generate rotation reports
+      lockAssignments: function() {
+        const timestamp = new Date().toISOString();
+        const currentSession = ANALYTICS.getCurrentSessionId();
+        // Auto-start a session if none exists so locking always works without a warning
+        let sessionId = currentSession;
+        if (!sessionId) {
+          console.warn('[ROTATION] No active session found. Auto-starting session for lock operation.');
+          const dateVal = document.getElementById('date')?.value || new Date().toISOString().slice(0,10);
+          const shiftVal = document.querySelector('input[name="shift"]:checked')?.value || 'day';
+          const siteVal = document.getElementById('site')?.value || (STATE.currentSite || 'YHM2');
+          sessionId = ANALYTICS.startSession({ date: dateVal, shift: shiftVal, site: siteVal, plannedHC: Object.values(STATE.badges).filter(b => b.loc !== 'unassigned').length, notes: 'Auto-started at lock' });
+          console.log('[ROTATION] Auto-started session:', sessionId);
+        }
+        
+        // Create assignment lock record
+        const lockRecord = {
+          id: `lock_${Date.now()}`,
+          timestamp: timestamp,
+          sessionId: sessionId,
+          date: new Date().toDateString(),
+          assignments: {},
+          rotationScores: {},
+          nextRecommendations: {}
+        };
+        
+        // Capture current assignments
+        Object.values(STATE.badges).forEach(badge => {
+          if (badge.loc !== 'unassigned') {
+            if (!lockRecord.assignments[badge.loc]) {
+              lockRecord.assignments[badge.loc] = [];
+            }
+            lockRecord.assignments[badge.loc].push({
+              employeeId: badge.eid,
+              employeeName: badge.name,
+              shiftCode: badge.scode,
+              site: badge.site
+            });
+          }
+        });
+        
+        // Calculate rotation scores for each employee
+        Object.values(STATE.analytics.performance).forEach(emp => {
+          lockRecord.rotationScores[emp.employeeId] = this.calculateRotationScore(emp.employeeId);
+        });
+        
+        // Generate next assignment recommendations
+        lockRecord.nextRecommendations = this.generateRotationRecommendations();
+        
+        // Save lock record
+        if (!STATE.analytics.rotationLocks) {
+          STATE.analytics.rotationLocks = [];
+        }
+        STATE.analytics.rotationLocks.push(lockRecord);
+        ANALYTICS.saveAnalyticsData();
+        
+        // Process in integrated rotation system
+        this.processRotationLock(lockRecord);
+        
+        // Update UI to show locked state and rotation management
+        this.updateLockUI(true);
+        this.showRotationManagementPanel();
+        
+        console.log('[ROTATION] Assignments locked and processed in-app:', lockRecord);
+        return lockRecord;
+      },
+
+      // Lock assignments for a specific quarter without disabling UI globally
+      lockQuarter: function(quarter) {
+        const q = quarter || (STATE.currentQuarter || 'Q1');
+        const site = STATE.currentSite || 'YDD2';
+        const lockKey = `${site}_${q}`;
+        
+        const timestamp = new Date().toISOString();
+        let currentSession = ANALYTICS.getCurrentSessionId();
+        if (!currentSession) {
+          console.warn('[ROTATION] No active session for quarter lock. Auto-starting.');
+          const dateVal = document.getElementById('date')?.value || new Date().toISOString().slice(0,10);
+          const shiftVal = document.querySelector('input[name="shift"]:checked')?.value || 'day';
+          const siteVal = document.getElementById('site')?.value || (STATE.currentSite || 'YHM2');
+          currentSession = ANALYTICS.startSession({ date: dateVal, shift: shiftVal, site: siteVal, plannedHC: Object.values(STATE.badges).filter(b => b.loc !== 'unassigned').length, notes: 'Auto-started at quarter lock' });
+        }
+
+        // Build lock record similar to full lock, with quarter tag
+        const lockRecord = {
+          id: `lock_${lockKey}_${Date.now()}`,
+          quarter: q,
+          site: site,
+          timestamp,
+          sessionId: currentSession,
+          date: new Date().toDateString(),
+          assignments: {},
+          rotationScores: {},
+          nextRecommendations: {}
+        };
+
+        // Capture current assignments snapshot into quarterAssignments (preserve existing)
+        STATE.quarterAssignments[q] = STATE.quarterAssignments[q] || {};
+        Object.values(STATE.badges).forEach(badge => {
+          // Only capture assignments for the current site
+          if (badge.site === site || badge.site === 'YDD_SHARED') {
+            STATE.quarterAssignments[q][badge.id] = badge.loc;
+            if (badge.loc !== 'unassigned') {
+              if (!lockRecord.assignments[badge.loc]) lockRecord.assignments[badge.loc] = [];
+              lockRecord.assignments[badge.loc].push({
+                employeeId: badge.eid,
+                employeeName: badge.name,
+                shiftCode: badge.scode,
+                site: badge.site
+              });
+            }
+          }
+        });
+
+        // Rotation scores and next recommendations
+        Object.values(STATE.analytics.performance).forEach(emp => {
+          lockRecord.rotationScores[emp.employeeId] = this.calculateRotationScore(emp.employeeId);
+        });
+        lockRecord.nextRecommendations = this.generateRotationRecommendations();
+
+        // Persist quarter lock record
+        STATE.analytics.quarterLocks = STATE.analytics.quarterLocks || [];
+        STATE.analytics.quarterLocks.push(lockRecord);
+        STATE.quarterLocks[lockKey] = true;
+          // Log a 'lock' entry per assignment so search reflects the locked quarter
+          Object.entries(lockRecord.assignments).forEach(([process, employees]) => {
+            (employees || []).forEach(emp => {
+              const badge = Object.values(STATE.badges).find(b => b.eid === emp.employeeId);
+              const logEntry = {
+                id: `log_${q}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                timestamp: new Date().toISOString(),
+                date: new Date().toDateString(),
+                badgeId: badge ? badge.id : `emp_${emp.employeeId}`,
+                employeeId: emp.employeeId,
+                employeeName: emp.employeeName,
+                shiftCode: emp.shiftCode,
+                site: emp.site,
+                quarter: q,
+                fromLocation: process,
+                toLocation: process,
+                processPath: getTilePathName(process),
+                action: 'lock',
+                duration: null,
+                sessionId: currentSession
+              };
+              STATE.analytics.history.push(logEntry);
+            });
+          });
+          ANALYTICS.saveAnalyticsData();
+
+        // Optionally open rotation management panel
+        this.showRotationManagementPanel();
+        // Do NOT disable the lock button globally; just provide lightweight feedback
+        console.log(`[ROTATION] Quarter ${q} locked for site ${site}`, lockRecord);
+        return lockRecord;
+      },
+      
+      // Calculate fairness score for employee rotation
+      calculateRotationScore: function(employeeId) {
+        const emp = STATE.analytics.performance[employeeId];
+        if (!emp) return { score: 0, status: 'unknown' };
+        
+        const processes = Object.keys(emp.processExperience);
+        const totalAssignments = emp.totalAssignments;
+        const uniqueProcesses = processes.length;
+        
+        // Calculate assignment distribution
+        const assignmentDistribution = {};
+        let maxAssignments = 0;
+        let minAssignments = Infinity;
+        
+        processes.forEach(process => {
+          const count = emp.processExperience[process];
+          assignmentDistribution[process] = count;
+          maxAssignments = Math.max(maxAssignments, count);
+          minAssignments = Math.min(minAssignments, count);
+        });
+        
+        // Calculate fairness metrics
+        const varietyScore = Math.min(100, uniqueProcesses * 10); // More processes = higher score
+        const balanceScore = totalAssignments > 0 ? 
+          Math.max(0, 100 - ((maxAssignments - minAssignments) / totalAssignments * 100)) : 50;
+        
+        // Recent rotation tracking
+        const recentAssignments = STATE.analytics.history
+          .filter(h => h.employeeId === employeeId)
+          .slice(-10); // Last 10 assignments
+        
+        const recentProcesses = new Set(recentAssignments.map(h => h.toLocation));
+        const recentVarietyScore = Math.min(100, recentProcesses.size * 20);
+        
+        // Overall rotation score (0-100, higher is better rotation)
+        const overallScore = (varietyScore * 0.4) + (balanceScore * 0.4) + (recentVarietyScore * 0.2);
+        
+        let status = 'good';
+        if (overallScore < 30) status = 'poor';
+        else if (overallScore < 60) status = 'needs_improvement';
+        else if (overallScore >= 85) status = 'excellent';
+        
+        return {
+          score: Math.round(overallScore),
+          status: status,
+          varietyScore: Math.round(varietyScore),
+          balanceScore: Math.round(balanceScore),
+          recentVarietyScore: Math.round(recentVarietyScore),
+          totalProcesses: uniqueProcesses,
+          totalAssignments: totalAssignments,
+          assignmentDistribution: assignmentDistribution,
+          recommendedProcesses: this.getRecommendedProcessesForRotation(employeeId)
+        };
+      },
+      
+      // Get recommended processes for better rotation
+      getRecommendedProcessesForRotation: function(employeeId) {
+        const emp = STATE.analytics.performance[employeeId];
+        if (!emp) return [];
+        
+  const allProcesses = ['cb', 'ibws', 'lineloaders', 'trickle', 'dm', 'idrt', 'pb', 'e2s', 'dockws', 'e2sws', 'tpb', 'tws', 'sap', 'ao5s', 'pa', 'ps', 'laborshare'];
+        const experienced = Object.keys(emp.processExperience);
+        const experienceCounts = emp.processExperience;
+        
+        // Find processes with low or no experience
+        const recommendations = allProcesses.map(process => {
+          const currentExp = experienceCounts[process] || 0;
+          const priority = experienced.includes(process) ? 
+            (currentExp < 3 ? 'expand' : 'maintain') : 'learn';
+          
+          return {
+            process: process,
+            currentExperience: currentExp,
+            priority: priority,
+            reason: priority === 'learn' ? 'New skill opportunity' : 
+                   priority === 'expand' ? 'Build proficiency' : 'Maintain skills'
+          };
+        });
+        
+        // Sort by priority: learn > expand > maintain
+        const priorityOrder = { learn: 3, expand: 2, maintain: 1 };
+        return recommendations.sort((a, b) => priorityOrder[b.priority] - priorityOrder[a.priority]);
+      },
+      
+      // Generate rotation recommendations for all employees
+      generateRotationRecommendations: function() {
+        const recommendations = {};
+        
+        Object.values(STATE.analytics.performance).forEach(emp => {
+          const rotationScore = this.calculateRotationScore(emp.employeeId);
+          const processRecommendations = rotationScore.recommendedProcesses.slice(0, 3);
+          
+          recommendations[emp.employeeId] = {
+            name: emp.name,
+            currentScore: rotationScore.score,
+            status: rotationScore.status,
+            recommendedProcesses: processRecommendations,
+            reasoning: rotationScore.status === 'poor' ? 'Needs immediate rotation diversity' :
+                      rotationScore.status === 'needs_improvement' ? 'Could benefit from more variety' :
+                      rotationScore.status === 'excellent' ? 'Excellent rotation balance' : 'Good rotation variety'
+          };
+        });
+        
+        return recommendations;
+      },
+      
+      // Process rotation lock and integrate into in-app system
+      processRotationLock: function(lockRecord) {
+        console.log('[ROTATION] Processing rotation lock in-app...');
+        
+        // Create rotation management data structure
+        if (!STATE.analytics.rotationManagement) {
+          STATE.analytics.rotationManagement = {
+            lockHistory: [],
+            rotationRules: {
+              maxConsecutiveSameProcess: 3,
+              minProcessVariety: 2,
+              rotationCycleDays: 7,
+              fairnessThreshold: 60
+            },
+            assignmentQueue: [],
+            rotationAlerts: []
+          };
+        }
+        
+        const mgmt = STATE.analytics.rotationManagement;
+        
+        // Store lock record
+        mgmt.lockHistory.push(lockRecord);
+        
+        // Generate smart assignment queue for next session
+        this.generateSmartAssignmentQueue(lockRecord);
+        
+        // Create rotation alerts for employees who need attention
+        this.generateRotationAlerts(lockRecord);
+        
+        // Update employee rotation profiles
+        this.updateRotationProfiles(lockRecord);
+        
+        // Save to persistent storage
+        ANALYTICS.saveAnalyticsData();
+        
+        console.log('[ROTATION] In-app rotation system updated successfully');
+        return mgmt;
+      },
+      
+      // Generate assignment lock CSV
+      generateAssignmentLockCSV: function(lockRecord) {
+        const headers = ['Process', 'Employee ID', 'Employee Name', 'Shift Code', 'Site', 'Lock Timestamp', 'Session ID'];
+        const rows = [];
+        
+        Object.entries(lockRecord.assignments).forEach(([process, employees]) => {
+          employees.forEach(emp => {
+            rows.push([
+              process.toUpperCase(),
+              emp.employeeId,
+              emp.employeeName,
+              emp.shiftCode,
+              emp.site,
+              lockRecord.timestamp,
+              lockRecord.sessionId
+            ]);
+          });
+        });
+        
+        return [headers, ...rows].map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
+      },
+      
+      // Generate rotation analysis CSV
+      generateRotationAnalysisCSV: function(lockRecord) {
+        const headers = [
+          'Employee ID', 'Employee Name', 'Rotation Score', 'Status', 'Variety Score', 'Balance Score', 
+          'Recent Variety Score', 'Total Processes', 'Total Assignments', 'Most Experienced Process', 
+          'Least Experienced Process', 'Recommended Action'
+        ];
+        
+        const rows = Object.entries(lockRecord.rotationScores).map(([empId, score]) => {
+          const emp = STATE.analytics.performance[empId];
+          const distribution = score.assignmentDistribution;
+          const processes = Object.entries(distribution);
+          
+          const mostExp = processes.length > 0 ? 
+            processes.reduce((max, curr) => curr[1] > max[1] ? curr : max) : ['N/A', 0];
+          const leastExp = processes.length > 0 ? 
+            processes.reduce((min, curr) => curr[1] < min[1] ? curr : min) : ['N/A', 0];
+          
+          let recommendedAction = 'Maintain current variety';
+          if (score.status === 'poor') recommendedAction = 'Urgent: Assign to new processes';
+          else if (score.status === 'needs_improvement') recommendedAction = 'Increase process variety';
+          else if (score.status === 'excellent') recommendedAction = 'Continue balanced rotation';
+          
+          return [
+            empId,
+            emp ? emp.name : 'Unknown',
+            score.score,
+            score.status,
+            score.varietyScore,
+            score.balanceScore,
+            score.recentVarietyScore,
+            score.totalProcesses,
+            score.totalAssignments,
+            `${mostExp[0]} (${mostExp[1]})`,
+            `${leastExp[0]} (${leastExp[1]})`,
+            recommendedAction
+          ];
+        });
+        
+        return [headers, ...rows].map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
+      },
+      
+      // Generate recommendations CSV
+      generateRecommendationsCSV: function(lockRecord) {
+        const headers = ['Employee ID', 'Employee Name', 'Current Score', 'Recommended Process 1', 'Recommended Process 2', 'Recommended Process 3', 'Priority Reason'];
+        
+        const rows = Object.entries(lockRecord.nextRecommendations).map(([empId, rec]) => [
+          empId,
+          rec.name,
+          rec.currentScore,
+          rec.recommendedProcesses[0] ? rec.recommendedProcesses[0].process.toUpperCase() : 'N/A',
+          rec.recommendedProcesses[1] ? rec.recommendedProcesses[1].process.toUpperCase() : 'N/A',
+          rec.recommendedProcesses[2] ? rec.recommendedProcesses[2].process.toUpperCase() : 'N/A',
+          rec.reasoning
+        ]);
+        
+        return [headers, ...rows].map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
+      },
+      
+      // Generate HTML rotation summary
+      generateRotationSummaryHTML: function(lockRecord) {
+        const totalEmployees = Object.keys(lockRecord.rotationScores).length;
+        const avgRotationScore = Object.values(lockRecord.rotationScores)
+          .reduce((sum, score) => sum + score.score, 0) / totalEmployees;
+        
+        const statusCounts = {};
+        Object.values(lockRecord.rotationScores).forEach(score => {
+          statusCounts[score.status] = (statusCounts[score.status] || 0) + 1;
+        });
+        
+        const processAssignments = Object.keys(lockRecord.assignments).length;
+        
+        return `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>VLAB Rotation Summary - ${new Date(lockRecord.timestamp).toDateString()}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+        .container { max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        .header { text-align: center; margin-bottom: 30px; border-bottom: 3px solid #f59e0b; padding-bottom: 15px; }
+        .header h1 { color: #1f2937; margin: 0; }
+        .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 20px 0; }
+        .metric-card { background: #fef3c7; border: 1px solid #fbbf24; border-radius: 8px; padding: 15px; text-align: center; }
+        .metric-value { font-size: 24px; font-weight: bold; color: #92400e; }
+        .metric-label { color: #b45309; font-size: 12px; text-transform: uppercase; }
+        .rotation-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        .rotation-table th, .rotation-table td { padding: 8px; text-align: left; border-bottom: 1px solid #e5e7eb; font-size: 12px; }
+        .rotation-table th { background: #fef3c7; font-weight: 600; }
+        .status-poor { background: #fee2e2; color: #dc2626; }
+        .status-needs_improvement { background: #fef3c7; color: #d97706; }
+        .status-good { background: #d1fae5; color: #059669; }
+        .status-excellent { background: #dbeafe; color: #2563eb; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔒 Assignment Lock & Rotation Report</h1>
+            <p>${new Date(lockRecord.timestamp).toDateString()} - Session: ${lockRecord.sessionId}</p>
+        </div>
+        
+        <div class="metrics">
+            <div class="metric-card">
+                <div class="metric-value">${totalEmployees}</div>
+                <div class="metric-label">Total Employees</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">${processAssignments}</div>
+                <div class="metric-label">Active Processes</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">${avgRotationScore.toFixed(1)}</div>
+                <div class="metric-label">Avg Rotation Score</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">${statusCounts.excellent || 0}</div>
+                <div class="metric-label">Excellent Rotation</div>
+            </div>
+        </div>
+        
+        <h2>Employee Rotation Analysis</h2>
+        <table class="rotation-table">
+            <thead>
+                <tr>
+                    <th>Employee</th>
+                    <th>Score</th>
+                    <th>Status</th>
+                    <th>Processes</th>
+                    <th>Total Assignments</th>
+                    <th>Next Recommended</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${Object.entries(lockRecord.rotationScores).map(([empId, score]) => {
+                  const emp = STATE.analytics.performance[empId];
+                  const rec = lockRecord.nextRecommendations[empId];
+                  return `
+                    <tr class="status-${score.status}">
+                        <td>${emp ? emp.name : 'Unknown'}</td>
+                        <td>${score.score}</td>
+                        <td>${score.status.replace('_', ' ')}</td>
+                        <td>${score.totalProcesses}</td>
+                        <td>${score.totalAssignments}</td>
+                        <td>${rec && rec.recommendedProcesses[0] ? rec.recommendedProcesses[0].process.toUpperCase() : 'N/A'}</td>
+                    </tr>
+                  `;
+                }).join('')}
+            </tbody>
+        </table>
+        
+        <h2>Current Process Assignments</h2>
+        ${Object.entries(lockRecord.assignments).map(([process, employees]) => `
+            <h3>${process.toUpperCase()} (${employees.length} employees)</h3>
+            <ul>
+                ${employees.map(emp => `<li>${emp.employeeName} (${emp.employeeId}) - ${emp.shiftCode}</li>`).join('')}
+            </ul>
+        `).join('')}
+        
+        <div style="margin-top: 30px; padding-top: 15px; border-top: 1px solid #e5e7eb; text-align: center; color: #6b7280; font-size: 11px;">
+            Generated by VLAB Fair Rotation System - ${lockRecord.timestamp}
+        </div>
+    </div>
+</body>
+</html>`;
+      },
+      
+      // Generate smart assignment queue for next session
+      generateSmartAssignmentQueue: function(lockRecord) {
+        const mgmt = STATE.analytics.rotationManagement;
+        mgmt.assignmentQueue = [];
+        
+        // Analyze current assignments and create balanced suggestions
+        const processNeeds = this.analyzeProcessNeeds(lockRecord);
+        const employeeRotationNeeds = this.analyzeEmployeeRotationNeeds();
+        
+        // Create assignment suggestions prioritizing rotation fairness
+        Object.entries(employeeRotationNeeds).forEach(([empId, needs]) => {
+          const employee = STATE.analytics.performance[empId];
+          if (!employee) return;
+          
+          // Find best process match for this employee
+          const bestMatch = this.findBestProcessMatch(empId, processNeeds, needs);
+          
+          if (bestMatch) {
+            mgmt.assignmentQueue.push({
+              employeeId: empId,
+              employeeName: employee.name,
+              recommendedProcess: bestMatch.process,
+              priority: bestMatch.priority,
+              reason: bestMatch.reason,
+              rotationScore: needs.currentScore,
+              expectedImprovement: bestMatch.expectedImprovement,
+              timestamp: new Date().toISOString()
+            });
+          }
+        });
+        
+        // Sort by priority and rotation need
+        mgmt.assignmentQueue.sort((a, b) => {
+          const priorityOrder = { high: 3, medium: 2, low: 1 };
+          return (priorityOrder[b.priority] - priorityOrder[a.priority]) || 
+                 (a.rotationScore - b.rotationScore); // Lower rotation score = higher need
+        });
+        
+        console.log('[ROTATION] Generated assignment queue:', mgmt.assignmentQueue);
+      },
+
+      // Analyze process staffing needs
+      analyzeProcessNeeds: function(lockRecord) {
+        const processNeeds = {};
+        const allProcesses = ['cb', 'ibws', 'lineloaders', 'trickle', 'dm', 'idrt', 'pb', 'e2s', 'dockws', 'e2sws', 'tpb', 'tws', 'sap', 'ao5s', 'pa', 'ps', 'laborshare'];
+        
+        allProcesses.forEach(process => {
+          const currentAssigned = lockRecord.assignments[process] ? lockRecord.assignments[process].length : 0;
+          const targetStaffing = 2; // Default target, could be made configurable
+          
+          processNeeds[process] = {
+            current: currentAssigned,
+            target: targetStaffing,
+            need: Math.max(0, targetStaffing - currentAssigned),
+            priority: currentAssigned === 0 ? 'high' : (currentAssigned < targetStaffing ? 'medium' : 'low')
+          };
+        });
+        
+        return processNeeds;
+      },
+
+      // Analyze individual employee rotation needs
+      analyzeEmployeeRotationNeeds: function() {
+        const employeeNeeds = {};
+        
+        Object.values(STATE.analytics.performance).forEach(emp => {
+          const rotationScore = this.calculateRotationScore(emp.employeeId);
+          const recentAssignments = STATE.analytics.history
+            .filter(h => h.employeeId === emp.employeeId)
+            .slice(-5);
+          
+          const recentProcesses = new Set(recentAssignments.map(h => h.toLocation));
+          const isStuckInSameProcess = recentProcesses.size === 1 && recentAssignments.length >= 3;
+          
+          employeeNeeds[emp.employeeId] = {
+            currentScore: rotationScore.score,
+            status: rotationScore.status,
+            needsVariety: rotationScore.score < 60,
+            stuckInSameProcess: isStuckInSameProcess,
+            preferredNewProcesses: rotationScore.recommendedProcesses.slice(0, 3),
+            lastProcess: recentAssignments.length > 0 ? recentAssignments[recentAssignments.length - 1].toLocation : null
+          };
+        });
+        
+        return employeeNeeds;
+      },
+
+      // Find best process match for employee
+      findBestProcessMatch: function(employeeId, processNeeds, employeeNeeds) {
+        let bestMatch = null;
+        let bestScore = 0;
+        
+        // Get employee's preferred new processes
+        const preferredProcesses = employeeNeeds.preferredNewProcesses || [];
+        
+        preferredProcesses.forEach(preferred => {
+          const process = preferred.process;
+          const processNeed = processNeeds[process];
+          
+          if (!processNeed || processNeed.need === 0) return;
+          
+          let score = 0;
+          let priority = 'low';
+          let reason = '';
+          
+          // Score based on rotation need
+          if (employeeNeeds.needsVariety) {
+            score += 30;
+            reason += 'Needs rotation variety. ';
+          }
+          
+          // Score based on process need
+          if (processNeed.priority === 'high') {
+            score += 25;
+            priority = 'high';
+            reason += `${process.toUpperCase()} urgently needs staff. `;
+          } else if (processNeed.priority === 'medium') {
+            score += 15;
+            priority = 'medium';
+            reason += `${process.toUpperCase()} needs additional staff. `;
+          }
+          
+          // Bonus for learning new skills
+          if (preferred.priority === 'learn') {
+            score += 20;
+            reason += 'New skill learning opportunity. ';
+          } else if (preferred.priority === 'expand') {
+            score += 10;
+            reason += 'Skill expansion opportunity. ';
+          }
+          
+          // Avoid same process if stuck
+          if (employeeNeeds.stuckInSameProcess && employeeNeeds.lastProcess === process) {
+            score -= 50;
+            reason += 'Avoiding repetitive assignment. ';
+          }
+          
+          if (score > bestScore) {
+            bestScore = score;
+            bestMatch = {
+              process: process,
+              priority: priority,
+              reason: reason.trim(),
+              expectedImprovement: Math.min(15, score / 5),
+              confidenceScore: Math.min(100, bestScore)
+            };
+          }
+        });
+        
+        return bestMatch;
+      },
+
+      // Generate rotation alerts for management attention
+      generateRotationAlerts: function(lockRecord) {
+        const mgmt = STATE.analytics.rotationManagement;
+        mgmt.rotationAlerts = [];
+        
+        Object.entries(lockRecord.rotationScores).forEach(([empId, score]) => {
+          const emp = STATE.analytics.performance[empId];
+          if (!emp) return;
+          
+          let alert = null;
+          
+          if (score.status === 'poor') {
+            alert = {
+              type: 'urgent',
+              employeeId: empId,
+              employeeName: emp.name,
+              message: `${emp.name} has very limited rotation variety (Score: ${score.score})`,
+              action: 'Assign to new process immediately',
+              priority: 'high'
+            };
+          } else if (score.status === 'needs_improvement') {
+            alert = {
+              type: 'warning',
+              employeeId: empId,
+              employeeName: emp.name,
+              message: `${emp.name} could benefit from more process variety (Score: ${score.score})`,
+              action: 'Consider rotation in next 2-3 assignments',
+              priority: 'medium'
+            };
+          }
+          
+          // Check for process monopolization
+          const maxProcess = Object.entries(score.assignmentDistribution)
+            .reduce((max, curr) => curr[1] > max[1] ? curr : max, ['', 0]);
+          
+          if (maxProcess[1] > mgmt.rotationRules.maxConsecutiveSameProcess && score.totalAssignments > 5) {
+            alert = {
+              type: 'monopolization',
+              employeeId: empId,
+              employeeName: emp.name,
+              message: `${emp.name} has been in ${maxProcess[0].toUpperCase()} for ${maxProcess[1]} assignments`,
+              action: `Move away from ${maxProcess[0].toUpperCase()} for better balance`,
+              priority: 'high'
+            };
+          }
+          
+          if (alert) {
+            alert.timestamp = new Date().toISOString();
+            mgmt.rotationAlerts.push(alert);
+          }
+        });
+        
+        console.log('[ROTATION] Generated alerts:', mgmt.rotationAlerts);
+      },
+
+      // Update employee rotation profiles
+      updateRotationProfiles: function(lockRecord) {
+        Object.entries(lockRecord.rotationScores).forEach(([empId, score]) => {
+          const emp = STATE.analytics.performance[empId];
+          if (!emp) return;
+          
+          // Update rotation history
+          if (!emp.rotationHistory) {
+            emp.rotationHistory = [];
+          }
+          
+          emp.rotationHistory.push({
+            date: new Date().toDateString(),
+            score: score.score,
+            status: score.status,
+            processesWorked: score.totalProcesses,
+            assignments: score.totalAssignments
+          });
+          
+          // Keep only last 30 records
+          if (emp.rotationHistory.length > 30) {
+            emp.rotationHistory = emp.rotationHistory.slice(-30);
+          }
+          
+          // Calculate rotation trend
+          if (emp.rotationHistory.length >= 3) {
+            const recent = emp.rotationHistory.slice(-3);
+            const avgRecentScore = recent.reduce((sum, r) => sum + r.score, 0) / recent.length;
+            const older = emp.rotationHistory.slice(-6, -3);
+            
+            if (older.length > 0) {
+              const avgOlderScore = older.reduce((sum, r) => sum + r.score, 0) / older.length;
+              emp.rotationTrend = avgRecentScore > avgOlderScore ? 'improving' : 
+                                 avgRecentScore < avgOlderScore ? 'declining' : 'stable';
+            }
+          }
+        });
+      },
+      
+      // Update UI to show locked state
+      updateLockUI: function(locked) {
+        const lockBtn = document.getElementById('lockAssignmentsBtn');
+        if (lockBtn) {
+          if (locked) {
+            lockBtn.textContent = '🔒 Locked';
+            lockBtn.disabled = true;
+            lockBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            lockBtn.title = 'Assignments are locked. Refresh to unlock.';
+            
+            // Add locked banner
+            this.showLockedBanner();
+          }
+        }
+      },
+      
+      // Show banner indicating assignments are locked
+      showLockedBanner: function() {
+        const existingBanner = document.getElementById('lockedBanner');
+        if (existingBanner) return; // Don't create duplicate
+        
+        const banner = document.createElement('div');
+        banner.id = 'lockedBanner';
+        banner.style.cssText = `
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          background: linear-gradient(90deg, #f59e0b, #d97706);
+          color: white;
+          text-align: center;
+          padding: 8px;
+          font-weight: 600;
+          font-size: 14px;
+          z-index: 1000;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+          animation: slideDown 0.3s ease-out;
+        `;
+        banner.innerHTML = '🔒 Assignments Locked - Rotation tracking active. Reports generated. Refresh page to unlock.';
+        
+        document.body.appendChild(banner);
+        
+        // Add CSS animation
+        const style = document.createElement('style');
+        style.textContent = `
+          @keyframes slideDown {
+            from { transform: translateY(-100%); }
+            to { transform: translateY(0); }
+          }
+        `;
+        document.head.appendChild(style);
+        
+        // Adjust page content to account for banner
+        document.body.style.paddingTop = '40px';
+      },
+      
+      // Show rotation management panel
+      showRotationManagementPanel: function() {
+        const existingPanel = document.getElementById('rotationPanel');
+        if (existingPanel) {
+          existingPanel.style.display = 'block';
+          return;
+        }
+        
+        const panel = document.createElement('div');
+        panel.id = 'rotationPanel';
+        panel.className = 'rotation-management-panel';
+        panel.innerHTML = `
+          <div class="rotation-panel-header">
+            <h3>🔄 Smart Rotation Management</h3>
+            <button class="rotation-close-btn" onclick="document.getElementById('rotationPanel').style.display='none'">×</button>
+          </div>
+          <div class="rotation-panel-content">
+            <div class="rotation-tabs">
+              <button class="rotation-tab active" data-tab="queue">Assignment Queue</button>
+              <button class="rotation-tab" data-tab="alerts">Rotation Alerts</button>
+              <button class="rotation-tab" data-tab="trends">Employee Trends</button>
+            </div>
+            <div id="rotation-queue" class="rotation-tab-content">
+              <div id="queueContent">Loading assignment queue...</div>
+            </div>
+            <div id="rotation-alerts" class="rotation-tab-content hidden">
+              <div id="alertsContent">Loading rotation alerts...</div>
+            </div>
+            <div id="rotation-trends" class="rotation-tab-content hidden">
+              <div id="trendsContent">Loading employee trends...</div>
+            </div>
+          </div>
+        `;
+        
+        // Style the panel
+        panel.style.cssText = `
+          position: fixed;
+          right: 20px;
+          top: 80px;
+          width: 400px;
+          max-height: 600px;
+          background: white;
+          border-radius: 12px;
+          box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+          z-index: 1001;
+          overflow: hidden;
+          border: 2px solid #f59e0b;
+        `;
+        
+        document.body.appendChild(panel);
+        
+        // Add panel styles
+        this.addRotationPanelStyles();
+        
+        // Setup tab functionality
+        this.setupRotationTabs();
+        
+        // Load initial content
+        this.loadRotationQueueContent();
+      },
+      
+      // Add CSS styles for rotation panel
+      addRotationPanelStyles: function() {
+        if (document.getElementById('rotationPanelStyles')) return;
+        
+        const style = document.createElement('style');
+        style.id = 'rotationPanelStyles';
+        style.textContent = `
+          .rotation-panel-header {
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            color: white;
+            padding: 12px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          }
+          .rotation-panel-header h3 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+          }
+          .rotation-close-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 0;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .rotation-close-btn:hover {
+            background: rgba(255,255,255,0.2);
+          }
+          .rotation-panel-content {
+            padding: 0;
+          }
+          .rotation-tabs {
+            display: flex;
+            background: #f3f4f6;
+          }
+          .rotation-tab {
+            flex: 1;
+            padding: 8px 12px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            color: #6b7280;
+            transition: all 0.2s;
+          }
+          .rotation-tab.active {
+            background: white;
+            color: #1f2937;
+            border-bottom: 2px solid #f59e0b;
+          }
+          .rotation-tab-content {
+            padding: 16px;
+            max-height: 400px;
+            overflow-y: auto;
+          }
+          .rotation-tab-content.hidden {
+            display: none;
+          }
+          .queue-item {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 8px;
+            transition: all 0.2s;
+          }
+          .queue-item:hover {
+            border-color: #f59e0b;
+            background: #fef3c7;
+          }
+          .queue-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+          }
+          .queue-employee {
+            font-weight: 600;
+            color: #1f2937;
+          }
+          .queue-process {
+            background: #3b82f6;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+          }
+          .queue-reason {
+            font-size: 12px;
+            color: #6b7280;
+            margin-bottom: 6px;
+          }
+          .queue-actions {
+            display: flex;
+            gap: 6px;
+          }
+          .queue-btn {
+            padding: 4px 8px;
+            font-size: 10px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+          }
+          .queue-btn.assign {
+            background: #10b981;
+            color: white;
+          }
+          .queue-btn.skip {
+            background: #6b7280;
+            color: white;
+          }
+          .queue-btn:hover {
+            opacity: 0.8;
+          }
+          .alert-item {
+            padding: 12px;
+            margin-bottom: 8px;
+            border-radius: 6px;
+            border-left: 4px solid;
+          }
+          .alert-urgent {
+            background: #fef2f2;
+            border-color: #dc2626;
+          }
+          .alert-warning {
+            background: #fef3c7;
+            border-color: #f59e0b;
+          }
+          .alert-monopolization {
+            background: #f0f4ff;
+            border-color: #3b82f6;
+          }
+          .alert-header {
+            font-weight: 600;
+            font-size: 14px;
+            margin-bottom: 4px;
+          }
+          .alert-message {
+            font-size: 12px;
+            color: #6b7280;
+            margin-bottom: 6px;
+          }
+          .alert-action {
+            font-size: 12px;
+            font-weight: 500;
+            color: #1f2937;
+          }
+        `;
+        document.head.appendChild(style);
+      },
+      
+      // Setup tab functionality for rotation panel
+      setupRotationTabs: function() {
+        const tabs = document.querySelectorAll('.rotation-tab');
+        const contents = document.querySelectorAll('.rotation-tab-content');
+        
+        tabs.forEach(tab => {
+          tab.addEventListener('click', () => {
+            // Remove active from all tabs
+            tabs.forEach(t => t.classList.remove('active'));
+            contents.forEach(c => c.classList.add('hidden'));
+            
+            // Add active to clicked tab
+            tab.classList.add('active');
+            const tabName = tab.getAttribute('data-tab');
+            const content = document.getElementById(`rotation-${tabName}`);
+            if (content) {
+              content.classList.remove('hidden');
+              
+              // Load content based on tab
+              if (tabName === 'queue') this.loadRotationQueueContent();
+              else if (tabName === 'alerts') this.loadRotationAlertsContent();
+              else if (tabName === 'trends') this.loadRotationTrendsContent();
+            }
+          });
+        });
+      },
+      
+      // Load assignment queue content
+      loadRotationQueueContent: function() {
+        const queueContent = document.getElementById('queueContent');
+        const mgmt = STATE.analytics.rotationManagement;
+        
+        if (!mgmt || !mgmt.assignmentQueue || mgmt.assignmentQueue.length === 0) {
+          queueContent.innerHTML = '<p style="text-align: center; color: #6b7280;">No assignment recommendations available</p>';
+          return;
+        }
+        
+        queueContent.innerHTML = mgmt.assignmentQueue.map(item => `
+          <div class="queue-item" data-employee-id="${item.employeeId}">
+            <div class="queue-item-header">
+              <span class="queue-employee">${item.employeeName}</span>
+              <span class="queue-process">${item.recommendedProcess.toUpperCase()}</span>
+            </div>
+            <div class="queue-reason">${item.reason}</div>
+            <div style="font-size: 11px; color: #6b7280; margin-bottom: 8px;">
+              Current rotation: ${item.rotationScore} | Priority: ${item.priority} | Expected improvement: +${item.expectedImprovement}
+            </div>
+            <div class="queue-actions">
+              <button class="queue-btn assign" onclick="ANALYTICS.ROTATION.executeAssignment('${item.employeeId}', '${item.recommendedProcess}')">
+                Assign Now
+              </button>
+              <button class="queue-btn skip" onclick="ANALYTICS.ROTATION.skipAssignment('${item.employeeId}')">
+                Skip
+              </button>
+            </div>
+          </div>
+        `).join('');
+      },
+      
+      // Load rotation alerts content
+      loadRotationAlertsContent: function() {
+        const alertsContent = document.getElementById('alertsContent');
+        const mgmt = STATE.analytics.rotationManagement;
+        
+        if (!mgmt || !mgmt.rotationAlerts || mgmt.rotationAlerts.length === 0) {
+          alertsContent.innerHTML = '<p style="text-align: center; color: #6b7280;">No rotation alerts</p>';
+          return;
+        }
+        
+        alertsContent.innerHTML = mgmt.rotationAlerts.map(alert => `
+          <div class="alert-item alert-${alert.type}">
+            <div class="alert-header">${alert.employeeName}</div>
+            <div class="alert-message">${alert.message}</div>
+            <div class="alert-action">Action: ${alert.action}</div>
+          </div>
+        `).join('');
+      },
+      
+      // Load rotation trends content
+      loadRotationTrendsContent: function() {
+        const trendsContent = document.getElementById('trendsContent');
+        const employees = Object.values(STATE.analytics.performance);
+        
+        if (employees.length === 0) {
+          trendsContent.innerHTML = '<p style="text-align: center; color: #6b7280;">No employee data available</p>';
+          return;
+        }
+        
+        const employeesWithTrends = employees.filter(emp => emp.rotationHistory && emp.rotationHistory.length >= 2);
+        
+        if (employeesWithTrends.length === 0) {
+          trendsContent.innerHTML = '<p style="text-align: center; color: #6b7280;">Not enough data for trends analysis</p>';
+          return;
+        }
+        
+        trendsContent.innerHTML = employeesWithTrends.map(emp => {
+          const latest = emp.rotationHistory[emp.rotationHistory.length - 1];
+          const trendIcon = emp.rotationTrend === 'improving' ? '📈' : 
+                           emp.rotationTrend === 'declining' ? '📉' : '➡️';
+          
+          return `
+            <div class="queue-item">
+              <div class="queue-item-header">
+                <span class="queue-employee">${emp.name}</span>
+                <span style="font-size: 12px;">${trendIcon} ${emp.rotationTrend || 'stable'}</span>
+              </div>
+              <div style="font-size: 12px; color: #6b7280;">
+                Current Score: ${latest.score} | Processes: ${latest.processesWorked} | Total Assignments: ${latest.assignments}
+              </div>
+            </div>
+          `;
+        }).join('');
+      },
+      
+      // Execute assignment from queue
+      executeAssignment: function(employeeId, processKey) {
+        const badge = Object.values(STATE.badges).find(b => b.eid === employeeId);
+        if (!badge) {
+          alert('Employee badge not found');
+          return;
+        }
+        
+        // Move badge to the specified process
+        const oldLocation = badge.loc;
+        badge.loc = processKey;
+        
+        // Log the assignment
+        ANALYTICS.logAssignment(badge.id, oldLocation, processKey);
+        
+        // Update DOM
+        const badgeElement = document.getElementById(badge.id);
+        const targetContainer = processKey === 'unassigned' ? 
+          document.getElementById('unassignedStack') : 
+          document.querySelector(`#tile-${processKey} .path-box`);
+        
+        if (badgeElement && targetContainer) {
+          targetContainer.appendChild(badgeElement);
+          restack(targetContainer);
+          setCounts();
+        }
+        
+        // Remove from queue
+        const mgmt = STATE.analytics.rotationManagement;
+        if (mgmt && mgmt.assignmentQueue) {
+          mgmt.assignmentQueue = mgmt.assignmentQueue.filter(item => item.employeeId !== employeeId);
+          ANALYTICS.saveAnalyticsData();
+        }
+        
+        // Refresh queue display
+        this.loadRotationQueueContent();
+        
+        alert(`✅ ${badge.name} assigned to ${processKey.toUpperCase()}`);
+      },
+      
+      // Skip assignment from queue  
+      skipAssignment: function(employeeId) {
+        const mgmt = STATE.analytics.rotationManagement;
+        if (mgmt && mgmt.assignmentQueue) {
+          mgmt.assignmentQueue = mgmt.assignmentQueue.filter(item => item.employeeId !== employeeId);
+          ANALYTICS.saveAnalyticsData();
+          this.loadRotationQueueContent();
+        }
+      }
+    }
+  };
+
   // Load analytics data on startup
   ANALYTICS.loadAnalyticsData();
   // Load saved quarter snapshots if available
@@ -1492,6 +4502,12 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // ULTRA-SIMPLE AUTO-LOAD - bypasses all complex logic
   function simpleAutoLoad() {
+    // Prevent auto-load if we just manually switched tabs (e.g. from Fetch Roster)
+    if (window._MANUAL_TAB_SWITCH) {
+      console.log('[AUTO-LOAD] Skipped due to manual tab switch');
+      return;
+    }
+
     console.log('[AUTO-LOAD] ============ STARTING PROPER DATA FLOW ============');
     
     // Don't run if form is being processed
@@ -1584,10 +4600,13 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // STEP 4: Create badges ONLY for filtered employees (this is the key fix)
     STATE.badges = {}; // Clear existing
+    STATE.barcodeMap = {};   // BadgeBarcodeID → badge object
+    STATE.eidMap = {};       // EID → badge object
     
     filteredEmployees.forEach(emp => {
       const empId = emp['Employee ID'] || emp.ID || emp.EID || emp.eid;
       const badgeId = `b_${empId}`;
+      const badgeBarcodeId = emp.badgeBarcodeId || emp.BadgeBarcodeID || emp.barcode || emp.Barcode;
       
       STATE.badges[badgeId] = {
         id: badgeId,
@@ -1597,8 +4616,14 @@ document.addEventListener('DOMContentLoaded', () => {
                shiftCodeOf(emp['Shift Pattern'] || emp.ShiftCode || emp.shiftPattern || ''),
         site: (emp.site || emp.Site) ? String(emp.site || emp.Site).toUpperCase() : classifySite(emp),
         present: true,
-        loc: 'unassigned'
+        loc: 'unassigned',
+        hidden: false,
+        badgeBarcodeId: badgeBarcodeId
       };
+
+      // Populate lookup maps
+      if (badgeBarcodeId) STATE.barcodeMap[badgeBarcodeId] = STATE.badges[badgeId];
+      if (empId) STATE.eidMap[empId] = STATE.badges[badgeId];
     });
     
     console.log(`[AUTO-LOAD] 🎫 Created badges for FILTERED employees only: ${Object.keys(STATE.badges).length}`);
@@ -2048,6 +5073,16 @@ document.addEventListener('DOMContentLoaded', () => {
           STATE.quarterAssignments[STATE.currentQuarter] = STATE.quarterAssignments[STATE.currentQuarter] || {};
           STATE.quarterAssignments[STATE.currentQuarter][badgeId] = target;
           
+          // Log assignment
+          if (window.ANALYTICS && ANALYTICS.logAssignment) {
+            ANALYTICS.logAssignment({
+              badgeId: badgeId,
+              fromLoc: 'unassigned',
+              toLoc: target,
+              site: currentSite
+            });
+          }
+
           successCount++;
         }
       });
@@ -2472,10 +5507,806 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ====== ROSTER DATABASE SYSTEM ======
   
-  const DATABASE = window.DATABASE;
+  class RosterDatabase {
+    constructor() {
+      this.database = new Map(); // Primary key: User ID (fallback to EID if missing)
+      this.loadDatabase();
+      this.setupEventListeners();
+      this.updateStatus();
+    }
+    
+    setupEventListeners() {
+      // Database management buttons
+      const viewDatabaseBtn = document.getElementById('viewDatabaseBtn');
+      const clearDatabaseBtn = document.getElementById('clearDatabaseBtn');
+      const loadFromDatabaseBtn = document.getElementById('loadFromDatabaseBtn');
+      const downloadLoginTemplateBtn = document.getElementById('downloadLoginTemplateBtn');
+  const downloadAdjustmentTemplateBtn = document.getElementById('downloadAdjustmentTemplateBtn');
+      
+      if (viewDatabaseBtn) viewDatabaseBtn.addEventListener('click', this.viewDatabase.bind(this));
+      if (clearDatabaseBtn) clearDatabaseBtn.addEventListener('click', this.clearDatabase.bind(this));
+      if (loadFromDatabaseBtn) loadFromDatabaseBtn.addEventListener('click', this.loadFromDatabase.bind(this));
+      if (downloadLoginTemplateBtn) downloadLoginTemplateBtn.addEventListener('click', this.downloadLoginTemplate.bind(this));
+  if (downloadAdjustmentTemplateBtn) downloadAdjustmentTemplateBtn.addEventListener('click', this.downloadAdjustmentTemplate.bind(this));
+      
+      // File input for logins
+      const loginInput = document.getElementById('logins');
+      if (loginInput) {
+        loginInput.addEventListener('change', this.handleLoginUpload.bind(this));
+      }
+    }
+    
+    // Load database from localStorage
+    loadDatabase() {
+      try {
+        const saved = localStorage.getItem('vlab:rosterDatabase');
+        if (saved) {
+          const data = JSON.parse(saved);
+          this.database = new Map(Object.entries(data.employees || {}));
+          // Migration: reindex to User ID if values have userId field
+          try {
+            let migrated = 0;
+            const reindexed = new Map();
+            for (const [k, v] of this.database.entries()){
+              const userId = (v.userId || v.handle || v['User ID'] || '').toString();
+              const eid = (v.eid || v.id || '').toString();
+              const key = userId || eid || k;
+              if (key !== k) migrated++;
+              reindexed.set(key, { ...v, id: key, userId: userId || v.userId || '', eid: eid || v.eid || '' });
+            }
+            if (migrated){
+              console.info(`[DATABASE] Migrated ${migrated} keys to User ID primary key`);
+              this.database = reindexed;
+              this.saveDatabase();
+            }
+          } catch(e){ console.warn('[DATABASE] migration skipped', e); }
+          console.log('[DATABASE] Loaded', this.database.size, 'employees from database');
+        }
+      } catch (error) {
+        console.error('[DATABASE] Error loading database:', error);
+        this.database = new Map();
+      }
+    }
+    
+    // Save database to localStorage
+    saveDatabase() {
+      try {
+        const data = {
+          employees: Object.fromEntries(this.database),
+          lastUpdated: new Date().toISOString(),
+          version: '1.0'
+        };
+        localStorage.setItem('vlab:rosterDatabase', JSON.stringify(data));
+        console.log('[DATABASE] Saved', this.database.size, 'employees to database');
+        this.updateStatus();
+      } catch (error) {
+        console.error('[DATABASE] Error saving database:', error);
+      }
+    }
+    
+    // Update database status display
+    updateStatus() {
+      const statusEl = document.getElementById('databaseStatus');
+      if (statusEl) {
+        const count = this.database.size;
+        if (count === 0) {
+          statusEl.textContent = 'Database: Empty';
+          statusEl.className = 'text-xs text-gray-500';
+        } else {
+          statusEl.textContent = `Database: ${count} employees`;
+          statusEl.className = 'text-xs text-green-600 font-medium';
+        }
+      }
+    }
+    
+    // Add or update employee in database
+    addEmployee(employee) {
+      const userId = (employee.userId || employee.handle || employee['User ID'] || '').toString();
+      const eid = (employee.eid || employee.id || employee['Employee ID'] || '').toString();
+      const key = (userId || eid);
+      if (!key) return;
+      this.database.set(key, {
+        id: key,
+        userId: userId,
+        eid: eid,
+        name: employee.name,
+        scode: employee.scode,
+        site: employee.site,
+        status: employee.status || 'Active',
+        addedDate: employee.addedDate || new Date().toISOString(),
+        badgeBarcodeId: employee.badgeBarcodeId || employee.barcode || null
+      });
+    }
+    
+    // Get employee from database
+    getEmployee(idLike) {
+      if (!idLike) return undefined;
+      const key = idLike.toString();
+      // First, try direct key lookup (User ID primary)
+      let found = this.database.get(key);
+      if (found) return found;
+      // Fallback: search by EID for backward compatibility
+      for (const v of this.database.values()){
+        if (v && (v.eid || '').toString() === key) return v;
+      }
+      return undefined;
+    }
+    
+    // Get all employees
+    getAllEmployees() {
+      return Array.from(this.database.values());
+    }
+    
+    // Update database with current roster
+    updateDatabase() {
+      const confirmed = confirm(
+        `Update permanent database with current roster?\n\n` +
+        `This will add new employees and update existing ones.\n` +
+        `Current database: ${this.database.size} employees\n` +
+        `Current roster: ${Object.keys(STATE.badges).length} associates`
+      );
+      
+      if (!confirmed) return;
+      
+      let addedCount = 0;
+      let updatedCount = 0;
+      
+      // Add all current associates to database
+      Object.values(STATE.badges).forEach(badge => {
+        const existing = this.getEmployee(badge.handle || badge.eid);
+        if (existing) {
+          // Update existing employee
+          existing.name = badge.name;
+          existing.scode = badge.scode;
+          existing.site = badge.site;
+          existing.status = badge.status || 'Active';
+          existing.lastSeen = new Date().toISOString();
+          updatedCount++;
+        } else {
+          // Add new employee
+          this.addEmployee({
+            userId: badge.handle,
+            eid: badge.eid,
+            name: badge.name,
+            scode: badge.scode,
+            site: badge.site,
+            status: badge.status || 'Active'
+          });
+          addedCount++;
+        }
+      });
+      
+      this.saveDatabase();
+      TOAST.show(`📊 Database updated: ${addedCount} added, ${updatedCount} updated`, 'success');
+    }
+    
+    // Handle login file upload
+    async handleLoginUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      
+      console.log('[LOGINS] Processing login file:', file.name);
+      
+      try {
+        const csvText = await this.readFileAsText(file);
+        const loginData = Papa.parse(csvText, {
+          header: true,
+          skipEmptyLines: true,
+          transformHeader: (header) => header.trim()
+        });
+        
+        if (loginData.errors.length > 0) {
+          console.warn('[LOGINS] CSV parsing errors:', loginData.errors);
+        }
+        
+        await this.processLogins(loginData.data);
+        
+        // Clear the file input
+        event.target.value = '';
+        document.getElementById('label-logins').textContent = '';
+        
+      } catch (error) {
+        console.error('[LOGINS] Error processing login file:', error);
+        TOAST.show('Error processing login file: ' + error.message, 'error');
+      }
+    }
+    
+    // Process login data and match against database
+    async processLogins(loginData) {
+      if (this.database.size === 0) {
+        TOAST.show('Database is empty. Please upload a roster first to build the database.', 'warning');
+        return;
+      }
+      
+      const matchedEmployees = [];
+      const unmatchedLogins = [];
+      
+      // Extract employee IDs from login data
+      const loginIds = new Set();
+      loginData.forEach(row => {
+        // Try multiple common column names for employee ID
+        const possibleIds = [
+          row['Employee ID'], row['ID'], row['EID'], row['EmployeeID'],
+          row['Badge'], row['BadgeID'], row['Login'], row['Associate ID']
+        ].filter(id => id);
+        
+        if (possibleIds.length > 0) {
+          const id = possibleIds[0].toString().trim();
+          if (id) loginIds.add(id);
+        }
+      });
+      
+      console.log('[LOGINS] Found', loginIds.size, 'unique login IDs');
+      
+      // Match login IDs against database
+      loginIds.forEach(loginId => {
+        const employee = this.getEmployee(loginId);
+        if (employee) {
+          matchedEmployees.push(employee);
+        } else {
+          unmatchedLogins.push(loginId);
+        }
+      });
+      
+      if (matchedEmployees.length === 0) {
+        TOAST.show('No matching employees found in database. Check login file format.', 'warning');
+        return;
+      }
+      
+      // Clear current badges and create new ones for matched employees
+      this.loadMatchedEmployees(matchedEmployees);
+      
+      // Show results
+      let message = `✅ Loaded ${matchedEmployees.length} present associates from database`;
+      if (unmatchedLogins.length > 0) {
+        message += `\n⚠️ ${unmatchedLogins.length} logins not found in database`;
+        console.warn('[LOGINS] Unmatched IDs:', unmatchedLogins);
+      }
+      
+      TOAST.show(message, 'success');
+    }
+    
+    // Load matched employees as badges
+    loadMatchedEmployees(employees) {
+      // Clear current state
+      STATE.badges = {};
+      STATE.barcodeMap = {};   // BadgeBarcodeID → badge object
+      STATE.eidMap = {};       // EID → badge object
+      
+      employees.forEach(emp => {
+        const badgeId = `b_${emp.eid}`;
+        STATE.badges[badgeId] = {
+          id: badgeId,
+          name: emp.name,
+          eid: emp.eid,
+          scode: emp.scode,
+          site: emp.site,
+          present: true,
+          loc: 'unassigned',
+          hidden: false,
+          badgeBarcodeId: emp.badgeBarcodeId
+        };
+
+        // Populate lookup maps
+        if (emp.badgeBarcodeId) STATE.barcodeMap[emp.badgeBarcodeId] = STATE.badges[badgeId];
+        if (emp.eid) STATE.eidMap[emp.eid] = STATE.badges[badgeId];
+      });
+      
+      // Apply site filtering
+      applySiteFilter();
+      
+      // Render badges
+      renderAllBadges();
+      setCounts();
+      
+      // Save snapshot
+      saveSnapshot();
+      
+      console.log('[LOGINS] Loaded', employees.length, 'employees from database');
+    }
+    
+    // View database contents
+    viewDatabase() {
+      if (this.database.size === 0) {
+        alert('Database is empty. Upload a roster to build the database.');
+        return;
+      }
+      
+      const employees = this.getAllEmployees();
+      const sites = {};
+      
+      // Group by site
+      employees.forEach(emp => {
+        if (!sites[emp.site]) sites[emp.site] = [];
+        sites[emp.site].push(emp);
+      });
+      
+      let message = `Roster Database (${employees.length} employees)\n\n`;
+      
+      Object.keys(sites).sort().forEach(site => {
+        message += `${site}: ${sites[site].length} employees\n`;
+        sites[site].slice(0, 5).forEach(emp => {
+          message += `  • ${emp.name} (${emp.eid}) - ${emp.scode}\n`;
+        });
+        if (sites[site].length > 5) {
+          message += `  ... and ${sites[site].length - 5} more\n`;
+        }
+        message += '\n';
+      });
+      
+      alert(message);
+    }
+    
+    // Clear database
+    clearDatabase() {
+      const confirmed = confirm(
+        `Clear the entire roster database and current board?\n\n` +
+        `This will permanently delete ${this.database.size} employees from the database\n` +
+        `and remove all current assignments.\n` +
+        `This action cannot be undone.`
+      );
+      
+      if (!confirmed) return;
+      
+      // Clear the database
+      this.database.clear();
+      localStorage.removeItem('vlab:rosterDatabase');
+      
+      // Clear all current assignments and badges
+      STATE.badges = {};
+      STATE.sites = {
+        YDD2: { assignments: {} },
+        YDD4: { assignments: {} },
+        YHM2: { assignments: {} }
+      };
+      
+      // Clear quarter assignments
+      STATE.quarterAssignments = {};
+      
+      // Clear all tiles and unassigned stack
+      const unassignedStack = document.getElementById('unassignedStack');
+      if (unassignedStack) unassignedStack.innerHTML = '';
+      
+      TILES.forEach(([tileId, tileKey]) => {
+        const tile = document.getElementById(tileId);
+        if (tile) {
+          const badgeLayer = tile.querySelector('.badge-layer');
+          if (badgeLayer) badgeLayer.innerHTML = '';
+        }
+      });
+      
+      // Clear localStorage assignments and all roster data
+      localStorage.removeItem('vlab:assignments');
+      localStorage.removeItem('vlab:currentRoster');
+      localStorage.removeItem('vlab:lastRoster');
+      localStorage.removeItem('vlab:quarterAssignments');
+      localStorage.removeItem('vlab:analytics');
+      
+      // Update counts and status
+      setCounts();
+      this.updateStatus();
+      
+      // Clear analytics session
+      if (window.ANALYTICS) {
+        ANALYTICS.endSession();
+      }
+      
+      TOAST.show('🗑️ Database and board cleared completely', 'info');
+      
+      // Small delay then refresh page to ensure everything is cleared
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+    }
+
+    // Load from database without requiring file upload
+    loadFromDatabase() {
+      if (this.database.size === 0) {
+        TOAST.show('Database is empty. Please upload a roster file first.', 'warning');
+        return;
+      }
+
+      console.log('[DATABASE] Loading all employees from database...');
+      
+    // Get scheduling values (controls were moved out of the upload form)
+    const siteSel = document.getElementById('site')?.value || document.getElementById('site_roster')?.value || 'YHM2';
+    const shiftSel = document.querySelector('input[name="shift"]:checked')?.value || document.querySelector('input[name="shift_roster"]:checked')?.value || 'day';
+    const quarterSel = document.getElementById('quarter')?.value || 'Q1';
+    const dateStr = document.getElementById('date')?.value || document.getElementById('date_roster')?.value || '';
+      
+      // Update current site and quarter
+      STATE.currentSite = siteSel;
+      STATE.currentQuarter = quarterSel;
+      
+      // Update display elements
+      const elDate = document.getElementById('displayDate');
+      const elDay = document.getElementById('displayDay');
+      const elShift = document.getElementById('displayShift');
+      const elType = document.getElementById('displayShiftType');
+      const elSite = document.getElementById('displaySite');
+      const elPlan = document.getElementById('displayPlannedHC');
+      const elActual = document.getElementById('displayActualHC');
+      
+      if (elDate) elDate.textContent = dateStr || '-';
+      if (elSite) elSite.textContent = siteSel;
+      if (elShift) elShift.textContent = shiftSel[0].toUpperCase() + shiftSel.slice(1);
+      if (elActual) elActual.textContent = '0';
+      
+      // Parse date for day calculation
+      const d = parseInputDate(dateStr);
+      const dow = d?.getDay() ?? 0;
+      const shortDay = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+      if (elDay) elDay.textContent = d ? shortDay[dow] : '-';
+      
+      // Update shift type
+      const shiftTypeMap = {
+        day:   {0:'FHD',1:'FHD',2:'FHD',3:'FHD',4:'BHD',5:'BHD',6:'BHD'},
+        night: {0:'FHN',1:'FHN',2:'FHN',3:'FHN',4:'BHN',5:'BHN',6:'BHN'}
+      };
+      if (elType) elType.textContent = shiftTypeMap[shiftSel][dow];
+      
+      // Clear current badges and load all from database
+      STATE.badges = {};
+      const allEmployees = this.getAllEmployees();
+      
+      console.log(`[DATABASE] Creating badges for ${allEmployees.length} employees for site: ${siteSel}`);
+      
+      allEmployees.forEach(emp => {
+        const badgeId = `b_${emp.eid}`;
+        // Prefer normalized site stored in database; fall back to classifier for raw CSV rows
+        const site = (emp.site || emp.Site) ? String(emp.site || emp.Site).toUpperCase() : classifySite(emp);
+        
+        // Skip ICQA associates
+        if (site === 'Other') return;
+        
+        // REMOVED site-specific filtering per "Nuclear Option" fix
+        // We now load ALL associates for the date/shift into STATE.badges
+        // Visibility is handled by renderAllBadges() and shouldShowBadge()
+        
+        // Shift pattern filtering for specific date and shift
+  const empShiftPattern = emp.shiftPattern || emp['Shift Pattern'] || '';
+  const empShiftCode = (emp.scode || emp.shiftCode || '').toString().toUpperCase() || shiftCodeOf(empShiftPattern);
+        
+        // Get allowed shift codes for the current date and shift
+        // Use raw date string for getAllowedCodes (it parses internally)
+        const currentDate = parseInputDate(dateStr);
+        if (dateStr && shiftSel) {
+          const allowedCodes = getAllowedCodes(dateStr, shiftSel);
+          
+          if (allowedCodes.length > 0 && !allowedCodes.includes(empShiftCode)) {
+            console.log(`[DATABASE] Filtering out ${emp.name} - shift code ${empShiftCode} not allowed for ${shiftSel} shift on ${dateStr}`);
+            return;
+          } else if (allowedCodes.length > 0) {
+            console.log(`[DATABASE] Including ${emp.name} - shift code ${empShiftCode} allowed for ${shiftSel} shift`);
+          }
+        }
+        
+        STATE.badges[badgeId] = {
+          id: badgeId,
+          name: emp.name,
+          eid: emp.eid,
+          scode: emp.scode || shiftCodeOf(emp.shiftPattern || ''),
+          site: (site === 'OTHER' ? 'Other' : site),
+          present: true,
+          loc: 'unassigned'
+        };
+      });
+      
+      console.log(`[DATABASE] Created ${Object.keys(STATE.badges).length} badges for site ${siteSel}`);
+      
+      // Apply site and shift filtering
+      applySiteFilter();
+      
+      // Count visible badges
+      const visibleBadges = Object.values(STATE.badges);
+      
+      // Update planned HC
+      if (elPlan) elPlan.textContent = String(visibleBadges.length);
+      
+      // Render badges
+      renderAllBadges();
+      setCounts();
+      
+      // Start analytics session
+      if (window.ANALYTICS) {
+        ANALYTICS.endSession();
+        ANALYTICS.startSession({
+          date: dateStr,
+          shift: shiftSel,
+          site: siteSel,
+          plannedHC: visibleBadges.length,
+          notes: `Loaded from database: ${visibleBadges.length} associates for ${siteSel}`
+        });
+      }
+      
+      // Save snapshot
+      try {
+        const snap = {
+          badges: STATE.badges,
+          sites: STATE.sites,
+          currentSite: STATE.currentSite,
+          meta: { date: dateStr, shift: shiftSel, site: siteSel, plannedHC: visibleBadges.length, quarter: STATE.currentQuarter }
+        };
+        localStorage.setItem('vlab:lastRoster', JSON.stringify(snap));
+      } catch (_) {}
+      
+      // Update output message
+      const output = document.getElementById('output');
+      if (output) {
+        const message = `🔄 Loaded from Database: ${visibleBadges.length} associates for ${siteSel}`;
+        output.innerHTML = `<div style="color: #059669; font-weight: 500;">${message}</div>`;
+      }
+      
+      TOAST.show(`✅ Loaded ${visibleBadges.length} associates from database`, 'success');
+      
+      console.log('[DATABASE] Load from database complete');
+      // Refresh roster overview & filters with database-backed data
+      try{ renderHeadcountOverview(); }catch(_){ }
+    }
+    
+    // Download login template
+    downloadLoginTemplate() {
+      const csvContent = [
+        'Employee ID',
+        '1234567',
+        '7654321',
+        '1122334'
+      ].join('\n');
+      
+      const blob = new Blob([csvContent], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'login-template.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // Download adjustments template
+    downloadAdjustmentTemplate() {
+      const csvContent = [
+        'User ID,Action,Date',
+        'qruchikr,SWAPIN,2025-11-11',
+        'ipanidhi,VET,2025-11-11',
+        'sgrupind,SWAPOUT,2025-11-11',
+        'manachha,VTO,2025-11-11',
+        'extworker1,LS_IN,2025-11-11',
+        'ourworker2,LS_OUT,2025-11-11'
+      ].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'adjustments_template.csv';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      TOAST.show('📥 Adjustments template downloaded','info');
+    }
+    
+    // Helper to read file as text
+    readFileAsText(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(e.target.result);
+        reader.onerror = e => reject(new Error('Failed to read file'));
+        reader.readAsText(file);
+      });
+    }
+  }
+  
+  // Initialize roster database
+  const DATABASE = new RosterDatabase();
+  window.DATABASE = DATABASE;
+
   // ====== ASSIGNMENT HISTORY TRACKING ======
   
-  const HISTORY = window.HISTORY;
+  class AssignmentHistoryManager {
+    constructor() {
+      this.history = [];
+      this.currentIndex = -1;
+      this.maxHistorySize = 50;
+      this.setupEventListeners();
+    }
+    
+    setupEventListeners() {
+      // Add keyboard shortcuts for undo/redo
+      document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          this.undo();
+        } else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+          e.preventDefault();
+          this.redo();
+        }
+      });
+    }
+    
+    recordAssignment(badgeId, fromLocation, toLocation, timestamp = new Date()) {
+      // Don't record internal state changes
+      if (fromLocation === 'assigned-elsewhere' || toLocation === 'assigned-elsewhere') return;
+      
+      const action = {
+        type: 'assignment',
+        badgeId,
+        badgeName: STATE.badges[badgeId]?.name || 'Unknown',
+        fromLocation,
+        toLocation,
+        site: STATE.currentSite,
+        quarter: STATE.currentQuarter,
+        timestamp,
+        id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+      };
+      
+      // Remove any actions after current index (for branching undo/redo)
+      this.history = this.history.slice(0, this.currentIndex + 1);
+      
+      // Add new action
+      this.history.push(action);
+      this.currentIndex = this.history.length - 1;
+      
+      // Trim history if too large
+      if (this.history.length > this.maxHistorySize) {
+        this.history = this.history.slice(-this.maxHistorySize);
+        this.currentIndex = this.history.length - 1;
+      }
+      
+      console.log('[HISTORY] Recorded assignment:', action);
+      this.updateUI();
+    }
+    
+    undo() {
+      if (this.currentIndex < 0) {
+        TOAST.info('Nothing to undo', 'Assignment History');
+        return;
+      }
+      
+      const action = this.history[this.currentIndex];
+      if (action.type === 'assignment') {
+        this.revertAssignment(action);
+        this.currentIndex--;
+        this.updateUI();
+        
+        TOAST.info(`Undid: ${action.badgeName} assignment`, 'Undo');
+      }
+    }
+    
+    redo() {
+      if (this.currentIndex >= this.history.length - 1) {
+        TOAST.info('Nothing to redo', 'Assignment History');
+        return;
+      }
+      
+      this.currentIndex++;
+      const action = this.history[this.currentIndex];
+      
+      if (action.type === 'assignment') {
+        this.reapplyAssignment(action);
+        this.updateUI();
+        
+        TOAST.info(`Redid: ${action.badgeName} assignment`, 'Redo');
+      }
+    }
+    
+    revertAssignment(action) {
+      const { badgeId, fromLocation, site, quarter } = action;
+      const badge = STATE.badges[badgeId];
+      
+      if (!badge) return;
+      
+      // Temporarily disable analytics logging
+      const wasSupressed = STATE.suppressAnalytics;
+      STATE.suppressAnalytics = true;
+      
+      // Revert the assignment
+      if (fromLocation === 'unassigned') {
+        // Remove from all site assignments
+        Object.keys(STATE.sites).forEach(siteCode => {
+          delete STATE.sites[siteCode].assignments[badgeId];
+        });
+        badge.loc = 'unassigned';
+      } else {
+        // Assign back to original location
+        Object.keys(STATE.sites).forEach(siteCode => {
+          delete STATE.sites[siteCode].assignments[badgeId];
+        });
+        
+        if (STATE.sites[site]) {
+          STATE.sites[site].assignments[badgeId] = fromLocation;
+          badge.loc = fromLocation;
+        }
+      }
+      
+      // Update quarter assignments
+      if (STATE.quarterAssignments[quarter]) {
+        STATE.quarterAssignments[quarter][badgeId] = fromLocation;
+      }
+      
+      // Save and re-render
+      MULTISITE.saveToStorage();
+      localStorage.setItem('vlab:quarterAssignments', JSON.stringify(STATE.quarterAssignments));
+      renderAllBadges();
+      setCounts();
+      
+      // Restore analytics state
+      STATE.suppressAnalytics = wasSupressed;
+    }
+    
+    reapplyAssignment(action) {
+      const { badgeId, toLocation, site, quarter } = action;
+      const badge = STATE.badges[badgeId];
+      
+      if (!badge) return;
+      
+      // Temporarily disable analytics logging
+      const wasSupressed = STATE.suppressAnalytics;
+      STATE.suppressAnalytics = true;
+      
+      // Reapply the assignment
+      if (toLocation === 'unassigned') {
+        Object.keys(STATE.sites).forEach(siteCode => {
+          delete STATE.sites[siteCode].assignments[badgeId];
+        });
+        badge.loc = 'unassigned';
+      } else {
+        Object.keys(STATE.sites).forEach(siteCode => {
+          delete STATE.sites[siteCode].assignments[badgeId];
+        });
+        
+        if (STATE.sites[site]) {
+          STATE.sites[site].assignments[badgeId] = toLocation;
+          badge.loc = toLocation;
+        }
+      }
+      
+      // Update quarter assignments
+      if (STATE.quarterAssignments[quarter]) {
+        STATE.quarterAssignments[quarter][badgeId] = toLocation;
+      }
+      
+      // Save and re-render
+      MULTISITE.saveToStorage();
+      localStorage.setItem('vlab:quarterAssignments', JSON.stringify(STATE.quarterAssignments));
+      renderAllBadges();
+      setCounts();
+      
+      // Restore analytics state
+      STATE.suppressAnalytics = wasSupressed;
+    }
+    
+    updateUI() {
+      // Update any undo/redo buttons if they exist
+      const undoBtn = document.getElementById('undoBtn');
+      const redoBtn = document.getElementById('redoBtn');
+      
+      if (undoBtn) {
+        undoBtn.disabled = this.currentIndex < 0;
+        undoBtn.title = this.currentIndex >= 0 ? 
+          `Undo: ${this.history[this.currentIndex]?.badgeName} assignment` : 
+          'Nothing to undo';
+      }
+      
+      if (redoBtn) {
+        redoBtn.disabled = this.currentIndex >= this.history.length - 1;
+        redoBtn.title = this.currentIndex < this.history.length - 1 ? 
+          `Redo: ${this.history[this.currentIndex + 1]?.badgeName} assignment` : 
+          'Nothing to redo';
+      }
+    }
+    
+    getRecentHistory(limit = 10) {
+      return this.history.slice(-limit).reverse();
+    }
+    
+    clearHistory() {
+      this.history = [];
+      this.currentIndex = -1;
+      this.updateUI();
+      TOAST.info('Assignment history cleared', 'History');
+    }
+  }
+  
+  // Initialize history manager
+  const HISTORY = new AssignmentHistoryManager();
+  window.HISTORY = HISTORY;
 
   // Debug function for YDD4 assignments
   window.debugYDD4Assignments = function() {
@@ -2527,7 +6358,7 @@ document.addEventListener('DOMContentLoaded', () => {
       b.loc !== 'unassigned' && 
       b.loc !== 'assigned-elsewhere' && 
       STATE.currentSite === 'YDD4' &&
-      !b.hidden
+      shouldShowBadge(b, STATE.currentSite, document.querySelector('input[name="shift"]:checked')?.value || 'day', document.getElementById('date')?.value || '')
     ).length;
     
     console.log('Currently visible YDD4 assignments:', currentAssignments);
@@ -2958,9 +6789,8 @@ document.addEventListener('DOMContentLoaded', () => {
     
     console.log(`[SITE-FILTER] Applying filter for site: ${currentSite}, shift: ${currentShift}, date: ${currentDate}`);
     
-    Object.values(STATE.badges).forEach(badge => {
-      badge.hidden = !shouldShowBadge(badge, currentSite, currentShift, currentDate);
-    });
+    // REMOVED badge.hidden assignment per guardrail #5
+    // Visibility is now calculated dynamically using shouldShowBadge()
     
     // Update unassigned header to match current site
     const unassignedSiteLabel = document.getElementById('unassignedSiteLabel');
@@ -3117,7 +6947,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
       // -------- Adjustments processing (runs AFTER roster is built) --------
-      function processAdjustments(adjustments, combinedRoster, opts = {}){
+      function processAdjustments_OLD(adjustments, combinedRoster, opts = {}){
         try{
           if (!Array.isArray(combinedRoster)) combinedRoster = [];
           if (!Array.isArray(adjustments) || adjustments.length === 0) {
@@ -3148,43 +6978,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const action = String(row['Action'] || row['Type'] || '').trim().toUpperCase();
             const dateVal = normalize(row['Date'] || row['date'] || '');
             if (!userId || !action) { stats.unknown++; return; }
-            
-            // Strict Date Matching for Adjustments
-            // If the adjustment row has a date, it MUST match the selected date.
-            // If the adjustment row has NO date, we assume it applies to the current upload (legacy behavior),
-            // but for safety, we should probably warn or skip if strict mode is desired.
-            // Here we allow empty dates to pass (assuming file is for today), but if a date IS present, it must match.
-            if (todayKey && dateVal && dateVal !== todayKey) { 
-              // console.log(`[ADJUST] Skipping ${userId} - Date mismatch (${dateVal} vs ${todayKey})`);
-              return; 
-            } 
-            
-            // Strict Shift Matching (Optional but recommended)
-            // If the adjustment has a 'Shift' column, check it against resolvedShift
-            const rowShift = String(row['Shift'] || row['shift'] || '').trim().toLowerCase();
-            if (rowShift && resolvedShift && rowShift !== resolvedShift) {
-               // console.log(`[ADJUST] Skipping ${userId} - Shift mismatch (${rowShift} vs ${resolvedShift})`);
-               return;
-            }
-            
-            // Strict Shift Code Matching (if provided)
-            // If the adjustment has a 'Shift Pattern' or 'ShiftCode' column, check if it matches the current shift type (Day/Night)
-            const rowShiftCode = String(row['Shift Pattern'] || row['ShiftCode'] || row['Shift Code'] || '').trim().toUpperCase();
-            if (rowShiftCode) {
-              const isDayCode = DAY_SET.has(rowShiftCode);
-              const isNightCode = NIGHT_SET.has(rowShiftCode);
-              const isDayShift = resolvedShift === 'day';
-              
-              if (isDayShift && !isDayCode && isNightCode) {
-                // console.log(`[ADJUST] Skipping ${userId} - Shift Code mismatch (Day shift vs ${rowShiftCode})`);
-                return;
-              }
-              if (!isDayShift && !isNightCode && isDayCode) {
-                // console.log(`[ADJUST] Skipping ${userId} - Shift Code mismatch (Night shift vs ${rowShiftCode})`);
-                return;
-              }
-            }
-
+            if (todayKey && dateVal && dateVal !== todayKey) { return; } // date mismatch
             if (!['SWAPIN','SWAPOUT','VET','VTO','LS_IN','LS_OUT'].includes(action)) { stats.unknown++; return; }
             stats[action]++;
 
@@ -3205,9 +6999,7 @@ document.addEventListener('DOMContentLoaded', () => {
                   'Management Area ID': (dbEmp && dbEmp.managementAreaId) || undefined,
                   site: (dbEmp && dbEmp.site) || ((resolvedSite || 'YHM2') === 'YHM2' ? 'YHM2' : 'YDD_SHARED'),
                   '_isUploaded': true,
-                  '_forceInclude': true,
-                  '_adjustmentDate': resolvedDate,
-                  '_adjustmentShift': resolvedShift
+                  '_forceInclude': true
                 };
                 combinedRoster.push(synthetic);
                 rosterIndex.set(key, synthetic);
@@ -3218,8 +7010,6 @@ document.addEventListener('DOMContentLoaded', () => {
               } else {
                 existing['Employee Status'] = 'Active';
                 existing._forceInclude = true;
-                existing._adjustmentDate = resolvedDate;
-                existing._adjustmentShift = resolvedShift;
                 console.log(`[ADJUST] Marked existing ${userId} active via ${action}`);
               }
             } else if (action === 'SWAPOUT' || action === 'VTO' || action === 'LS_OUT') {
@@ -3256,10 +7046,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const counts = {};
     TILES.forEach(([id,key]) => counts[key] = 0);
     
-    // Count badges, but exclude 'assigned-elsewhere' and 'hidden' from all counts
+    const currentSite = STATE.currentSite || 'YDD2';
+    const currentDate = document.getElementById('date')?.value || new Date().toISOString().slice(0,10);
+    const currentShift = document.querySelector('input[name="shift"]:checked')?.value || 'day';
+
+    // Count badges
     Object.values(STATE.badges).forEach(b => { 
-      if (b.loc !== 'assigned-elsewhere' && b.loc !== 'hidden') {
-        counts[b.loc] = (counts[b.loc] || 0) + 1; 
+      // Strict visibility check
+      if (!shouldShowBadge(b, currentSite, currentShift, currentDate)) return;
+
+      // Skip if assigned elsewhere
+      if (b.loc === 'assigned-elsewhere') return;
+      
+      // If b.loc is a valid tile key, increment count
+      if (counts.hasOwnProperty(b.loc)) {
+        counts[b.loc]++;
       }
     });
     
@@ -3274,13 +7075,19 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
     
-    // Count truly unassigned badges (not assigned anywhere and not hidden)
+    // Count truly unassigned badges
     const trulyUnassigned = Object.values(STATE.badges).filter(b => {
-      if (b.loc !== 'unassigned' || b.loc === 'hidden') return false;
-      // Check if assigned in any site
-      return !Object.values(STATE.sites).some(site => 
-        site.assignments && site.assignments[b.id]
+      // Must be locally unassigned
+      if (b.loc !== 'unassigned') return false;
+      
+      // Must NOT be assigned in ANY site (Strict Check)
+      const isAssignedAnywhere = Object.values(STATE.sites).some(site => 
+        site && site.assignments && site.assignments[b.id]
       );
+      if (isAssignedAnywhere) return false;
+      
+      // Must be visible for current context
+      return shouldShowBadge(b, currentSite, currentShift, currentDate);
     }).length;
     
     unassignedCountEl.textContent = String(trulyUnassigned);
@@ -3362,7 +7169,7 @@ document.addEventListener('DOMContentLoaded', () => {
       let badgeId = node && node.id;
       // if no DOM badge exists yet, try to find the badge in STATE by eid and create a badge node
       if (!node){
-        const found = Object.values(STATE.badges).find(b => String(b.eid) === String(payload));
+        const found = Object.values(STATE.badges).find(b => String(b.eid) === String(payload) || b.id === payload);
         if (found){
           node = renderBadge(found);
           badgeId = found.id;
@@ -3388,7 +7195,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const conflictBadges = Object.values(STATE.badges).filter(b => 
           b.id !== badgeId && 
           b.loc === newLocation && 
-          !b.hidden &&
+          shouldShowBadge(b, STATE.currentSite, document.querySelector('input[name="shift"]:checked')?.value || 'day', document.getElementById('date')?.value || '') &&
           b.site === STATE.badges[badgeId].site
         );
         
@@ -3576,15 +7383,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // info column
     const info = document.createElement('div');
     info.className = 'info';
-    const nameEl = document.createElement('div'); nameEl.className = 'name'; 
-    
-    // Add revolt symbol (⚡) for uploaded/adjusted associates
-    if (p.isUploaded) {
-      nameEl.innerHTML = `<span style="color:#f59e0b; margin-right:4px;">⚡</span>${p.name || ''}`;
-    } else {
-      nameEl.textContent = p.name || '';
-    }
-    
+    const nameEl = document.createElement('div'); nameEl.className = 'name'; nameEl.textContent = p.name || '';
     const shiftEl = document.createElement('div'); shiftEl.className = 'shiftmeta';
     const sc = p.scode || '';
     const stype = sc.toUpperCase().startsWith('N') ? 'Night' : 'Day';
@@ -3731,6 +7530,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderAllBadges(){
+    const currentSite = STATE.currentSite || 'YDD2';
+    const currentDate = document.getElementById('date')?.value || new Date().toISOString().slice(0,10);
+    const currentShift = document.querySelector('input[name="shift"]:checked')?.value || 'day';
+
     // clear
     if (unassignedStack) unassignedStack.innerHTML = '';
     Object.values(tileBadgeLayers).forEach(layer => { if (layer) layer.innerHTML = ''; });
@@ -3744,17 +7547,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Check if badge is assigned in ANY site (not just current site)
     const isAssignedAnywhere = (badgeId) => {
-      const assigned = Object.values(STATE.sites).some(site => 
-        site.assignments && site.assignments[badgeId]
+      // Ensure we check all sites in STATE.sites
+      return Object.values(STATE.sites).some(site => 
+        site && site.assignments && site.assignments[badgeId]
       );
-      return assigned;
     };
 
     // Render unassigned as a compact list in the left panel (preview), and full list in overlay when open.
     const overlayOpen = !!document.getElementById('unassignedOverlay');
-    const unassigned = Object.values(STATE.badges).filter(b => 
-      b.loc === 'unassigned' && !isAssignedAnywhere(b.id) && b.loc !== 'hidden'
-    );
+    const unassigned = Object.values(STATE.badges).filter(b => {
+      // STRICT FILTERING:
+      // 1. Must be 'unassigned' location
+      if (b.loc !== 'unassigned') return false;
+      
+      // 2. Must NOT be assigned in ANY site (including current)
+      if (isAssignedAnywhere(b.id)) return false;
+      
+      // 3. Must be visible for current site/shift/date
+      return shouldShowBadge(b, currentSite, currentShift, currentDate);
+    });
     const previewCount = overlayOpen ? Infinity : 6;
     let rendered = 0;
 
@@ -3769,11 +7580,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
       
-      // Skip hidden badges (not for current site)
-      if (b.loc === 'hidden') return;
-      
-      // Only show as unassigned if not assigned anywhere
-      if (b.loc === 'unassigned' && !isAssignedAnywhere(b.id)){
+      // STRICT RENDERING:
+      // 1. Unassigned: Must not be assigned anywhere and must be visible
+      if (b.loc === 'unassigned' && !isAssignedAnywhere(b.id) && shouldShowBadge(b, currentSite, currentShift, currentDate)){
         if (rendered < previewCount){
           const item = document.createElement('div');
           item.className = 'unassigned-item';
@@ -3785,11 +7594,16 @@ document.addEventListener('DOMContentLoaded', () => {
           rendered++;
         }
         // otherwise skip rendering in preview mode; overlay will render full list when open
-      } else if (b.loc !== 'assigned-elsewhere' && b.loc !== 'hidden') {
-        // Only render if assigned to current site (not assigned elsewhere or hidden)
-        const node = renderBadge(b);
-        if (b.present){ node.classList.add('present'); const t = document.createElement('div'); t.className='tick'; t.textContent='✓'; node.appendChild(t); }
-        tileBadgeLayers[b.loc]?.appendChild(node);
+      } else if (b.loc !== 'assigned-elsewhere' && shouldShowBadge(b, currentSite, currentShift, currentDate)) {
+        // Only render if assigned to current site (not assigned elsewhere) and visible
+        // CRITICAL FIX: Ensure the assignment actually belongs to the current site
+        const siteAssignment = STATE.sites[currentSite]?.assignments?.[b.id];
+        
+        if (siteAssignment) {
+            const node = renderBadge(b);
+            if (b.present){ node.classList.add('present'); const t = document.createElement('div'); t.className='tick'; t.textContent='✓'; node.appendChild(t); }
+            tileBadgeLayers[b.loc]?.appendChild(node);
+        }
       }
       // Skip rendering badges that are assigned-elsewhere
     });
@@ -3812,6 +7626,8 @@ document.addEventListener('DOMContentLoaded', () => {
       BULK.applyFilters();
     }
   }
+  // Expose renderAllBadges globally
+  window.renderAllBadges = renderAllBadges;
 
   // change preview
   form.addEventListener('change', () => {
@@ -3823,12 +7639,33 @@ document.addEventListener('DOMContentLoaded', () => {
     elType.textContent = shiftTypeMap[shift][d.getDay()];
   });
 
+  // Reload roster from database (only for date/shift changes)
+  function reloadRosterFromDatabase() {
+    console.log('[ROSTER] Reloading from database (Date/Shift change)...');
+    if (window.DATABASE) {
+      // Clear all site assignments on date/shift change to prevent zombie assignments
+      if (typeof STATE !== 'undefined' && STATE.sites) {
+        Object.values(STATE.sites).forEach(site => {
+          if (site.assignments) site.assignments = {};
+        });
+        console.log('[ROSTER] Cleared all site assignments for new date/shift');
+      }
+      window.DATABASE.loadFromDatabase();
+    } else {
+      console.warn('[ROSTER] Database module not available');
+    }
+  }
+
   // Multi-site switching functionality - both form and header selectors
   const setupSiteSwitching = function() {
     const formSiteSelect = document.getElementById('site');
     const headerSiteSelect = document.getElementById('headerSiteSelector');
     const shiftRadios = document.querySelectorAll('input[name="shift"]');
     const dateInput = document.getElementById('date');
+    
+    // Track previous filter state to detect what changed
+    let lastDate = dateInput?.value;
+    let lastShift = document.querySelector('input[name="shift"]:checked')?.value;
     
     const handleSiteSwitch = (newSite) => {
       // Only proceed if we have existing badges (board is already loaded)
@@ -3852,30 +7689,40 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     
     const handleFilterChange = () => {
-      // Only apply filtering if we have badges loaded
-      if (Object.keys(STATE.badges).length === 0) return;
+      const newDate = dateInput?.value;
+      const newShift = document.querySelector('input[name="shift"]:checked')?.value;
       
-      console.log('[FILTER] Shift/date changed, reapplying filters');
-      applySiteFilter();
-      renderAllBadges();
-      setCounts();
-      try{ renderHeadcountOverview(); }catch(_){ }
-      setScheduleChips();
+      // Check if date or shift changed
+      if (newDate !== lastDate || newShift !== lastShift) {
+        console.log('[FILTER] Date/Shift changed, reloading roster from DB');
+        lastDate = newDate;
+        lastShift = newShift;
+        reloadRosterFromDatabase();
+      } else {
+        // Only site or other minor change (should be handled by handleSiteSwitch, but just in case)
+        console.log('[FILTER] Filter changed but Date/Shift same, re-rendering only');
+        applySiteFilter();
+        renderAllBadges();
+        setCounts();
+        try{ renderHeadcountOverview(); }catch(_){ }
+        setScheduleChips();
+      }
     };
     
     // Form site selector handler
     formSiteSelect?.addEventListener('change', (e) => {
-      // When site changes on Roster tab, we want to trigger a full reload (handleFilterChange)
-      // instead of just a visual switch (handleSiteSwitch), because the roster composition might change
-      handleFilterChange();
+      handleSiteSwitch(e.target.value);
     });
     
     // Header site selector handler  
     headerSiteSelect?.addEventListener('change', (e) => {
-      // Header selector is just a visual switch for the board view
       handleSiteSwitch(e.target.value);
-      // Also sync the main site selector if it exists
-      if (formSiteSelect) formSiteSelect.value = e.target.value;
+    });
+
+    // Site Board site selector handler
+    const siteBoardSiteSelect = document.getElementById('siteBoardSiteSelector');
+    siteBoardSiteSelect?.addEventListener('change', (e) => {
+      handleSiteSwitch(e.target.value);
     });
     
     // Shift change handlers
@@ -3885,25 +7732,39 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Date change handler
     dateInput?.addEventListener('change', handleFilterChange);
+
+    // Quarter change handler
+    const quarterSelect = document.getElementById('quarter');
+    quarterSelect?.addEventListener('change', (e) => {
+      STATE.currentQuarter = e.target.value;
+      console.log('[FILTER] Quarter changed to', STATE.currentQuarter);
+      try{ renderHeadcountOverview(); }catch(_){ }
+    });
   };
   
   // Initialize site switching after DOM is ready
   setupSiteSwitching();
   
   // Ensure header site selector is synchronized with form on page load
-  const initializeHeaderSiteSelector = function() {
+  const initializeSiteSelectors = function() {
     const formSite = document.getElementById('site')?.value;
     const headerSite = document.getElementById('headerSiteSelector');
+    const siteBoardSite = document.getElementById('siteBoardSiteSelector');
     
-    if (formSite && headerSite && headerSite.value !== formSite) {
-      headerSite.value = formSite;
+    if (formSite) {
+      if (headerSite && headerSite.value !== formSite) {
+        headerSite.value = formSite;
+      }
+      if (siteBoardSite && siteBoardSite.value !== formSite) {
+        siteBoardSite.value = formSite;
+      }
       STATE.currentSite = formSite;
-      console.log('[MULTISITE] Initialized header selector to match form:', formSite);
+      console.log('[MULTISITE] Initialized site selectors to match form:', formSite);
     }
   };
   
   // Initialize on DOM ready
-  setTimeout(initializeHeaderSiteSelector, 100);
+  setTimeout(initializeSiteSelectors, 100);
 
   // Button event handlers
   const loadLastBtn = document.getElementById('loadLastBtn');
@@ -4064,6 +7925,523 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // submit
+  if (form) {
+    form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    
+    console.log('[DEBUG] Form submit event triggered');
+    
+    // Check if output element exists
+    if (!output) {
+      console.error('[DEBUG] Output element not found!');
+      alert('Error: Output element not found. Please refresh the page.');
+      return;
+    }
+    
+    // Set flag to prevent auto-load during form processing
+    isFormProcessing = true;
+    console.log('[FORM] Form processing started, preventing auto-load');
+    
+    console.log('[DEBUG] Form submission started');
+    console.log('[DEBUG] Form element:', form);
+    console.log('[DEBUG] Form files - roster:', form.roster?.files, 'logins:', form.logins?.files, 'adjustments:', form.adjustments?.files);
+    
+    // Store current form state to preserve after processing
+    // Controls (date/site/shift/quarter/planned volume) were relocated outside the form, so access them via document
+  const resolvedDate = document.getElementById('date')?.value || document.getElementById('date_roster')?.value || '';
+  const resolvedSite = document.getElementById('site')?.value || document.getElementById('site_roster')?.value || '';
+  const resolvedShift = document.querySelector('input[name="shift"]:checked')?.value || document.querySelector('input[name="shift_roster"]:checked')?.value || '';
+    const resolvedQuarter = document.getElementById('quarter')?.value || '';
+    const resolvedPlannedVolume = document.getElementById('plannedVolumeStub')?.value || document.getElementById('plannedVolumeRoster')?.value || '';
+    const currentFormState = {
+      date: resolvedDate,
+      site: resolvedSite,
+      shift: resolvedShift,
+      quarter: resolvedQuarter,
+      plannedVolume: resolvedPlannedVolume,
+      rosterFileName: form.roster.files[0]?.name,
+  loginsFileName: form.logins.files[0]?.name,
+  adjustmentsFileName: form.adjustments?.files[0]?.name
+    };
+    console.log('[DEBUG] Preserving form state:', currentFormState);
+    
+    output.textContent = 'Processing files…';
+
+  const rosterFile = form.roster?.files[0];
+  const loginsFile = form.logins?.files[0] || null;
+  const adjustmentsFile = form.adjustments?.files[0] || null;
+    
+    // Require at least one source to proceed: roster OR adjustments
+    // Previously we hard-required a roster file which prevented adjustments-only builds.
+    // Now we allow building from adjustments alone (we'll synthesize rows for SWAPIN/VET).
+    if (!rosterFile && !adjustmentsFile){ 
+      output.textContent = 'Please select a Roster File or an Adjustments CSV to proceed.'; 
+      console.warn('[DEBUG] No roster or adjustments file selected');
+      // Clear form processing flag
+      isFormProcessing = false;
+      return; 
+    }
+    
+    if (rosterFile) {
+      console.log('[DEBUG] Roster file selected:', rosterFile.name, 'size:', rosterFile.size);
+    } else {
+      console.log('[DEBUG] No roster file, proceeding with adjustments-only');
+    }
+    
+  console.log('[DEBUG] Daily logins file:', loginsFile ? `${loginsFile.name} (${loginsFile.size} bytes)` : 'None selected');
+  console.log('[DEBUG] Adjustments file:', adjustmentsFile ? `${adjustmentsFile.name} (${adjustmentsFile.size} bytes)` : 'None selected');
+
+    // Check if Papa Parse is available
+    if (typeof Papa === 'undefined') {
+      const errorMsg = 'Error: CSV parser not loaded. Please refresh the page and ensure internet connection.';
+      output.textContent = errorMsg;
+      console.error('[DEBUG] PapaParse library not available');
+      alert(errorMsg);
+      isFormProcessing = false;
+      return;
+    }
+
+    console.log('[DEBUG] Papa Parse available, version:', Papa.version || 'unknown');
+    console.log('[DEBUG] Starting CSV parsing...');
+    console.log('[DEBUG] Files to parse:', {
+      roster: rosterFile?.name,
+      logins: loginsFile?.name,
+      adjustments: adjustmentsFile?.name
+    });
+    
+    Promise.all([
+      rosterFile ? parseCsv(rosterFile).catch(err => { 
+        console.error('[DEBUG] Roster parsing error:', err); 
+        output.textContent = `Error parsing roster file: ${err.message}`;
+        return []; 
+      }) : Promise.resolve([]),
+      loginsFile ? parseCsv(loginsFile).catch(err => { 
+        console.error('[DEBUG] Daily logins parsing error:', err);
+        console.warn('[WARNING] Daily logins failed to parse, continuing without it');
+        return []; 
+      }) : Promise.resolve([]),
+      adjustmentsFile ? parseCsv(adjustmentsFile).catch(err => { 
+        console.error('[DEBUG] Adjustments parsing error:', err);
+        console.warn('[WARNING] Adjustments failed to parse, continuing without it');
+        return []; 
+      }) : Promise.resolve([]),
+    ]).then(([roster, logins, adjustments]) => {
+      console.debug('[build] rosterFile=', rosterFile && rosterFile.name, 'size=', rosterFile && rosterFile.size);
+      console.debug('[build] parsed roster rows=', Array.isArray(roster) ? roster.length : typeof roster, roster && roster[0]);
+  console.debug('[DEBUG] Daily logins parsed:', Array.isArray(logins) ? logins.length : typeof logins, logins && logins[0]);
+  console.debug('[DEBUG] Adjustments parsed:', Array.isArray(adjustments) ? adjustments.length : typeof adjustments, adjustments && adjustments[0]);
+  // Pull site/quarter/date/shift controls from Site Board controls block (outside upload form)
+  const siteSel = resolvedSite || (document.getElementById('site')?.value || 'YHM2');
+  const quarterSel = document.getElementById('quarter')?.value || 'Q1';
+      if (!rosterFile && adjustmentsFile){
+        try { TOAST.info('Building board from adjustments only (no roster uploaded).'); } catch(_) { console.log('[INFO] Adjustments-only build mode'); }
+      }
+      
+      // Initialize current site early for proper analytics tracking
+      STATE.currentSite = siteSel;
+      console.log('[DEBUG] Setting current site to:', siteSel);
+      
+  const dateStr = resolvedDate || '';
+  const shiftSel = resolvedShift || 'day';
+      const d = parseInputDate(dateStr); const dow = d?.getDay() ?? 0;
+      elDate.textContent = dateStr || '-';
+      elDay.textContent = d ? shortDay[dow] : '-';
+      elShift.textContent = shiftSel[0].toUpperCase() + shiftSel.slice(1);
+      elType.textContent = shiftTypeMap[shiftSel][dow];
+  elSite.textContent = siteSel;
+  STATE.currentQuarter = quarterSel;
+
+  const allowed = new Set(getAllowedCodes(dateStr, shiftSel));
+      if (allowed.size){ codesBar.classList.remove('hidden'); codesBar.textContent = `Codes active for ${dayNames[dow]} (${elShift.textContent}): ${[...allowed].sort().join(', ')}`; }
+      else { codesBar.classList.add('hidden'); codesBar.textContent = ''; }
+
+  // Process daily logins and merge with main roster
+  // If roster is absent, start from an empty array; synthetic entries from adjustments will be added below.
+  let combinedRoster = Array.isArray(roster) ? [...roster] : [];
+
+      // Apply adjustment actions AFTER roster is built
+      const adjRes = processAdjustments(adjustments, combinedRoster, { date: resolvedDate, shift: resolvedShift, site: resolvedSite });
+      combinedRoster = adjRes.combinedRoster;
+      try { window.VLAB_ADJUST_STATS = adjRes.stats; window.VLAB_ADJUST_FORCE_IDS = Array.from(adjRes.forceIds); } catch(_) {}
+      // If we are in adjustments-only mode and nothing applied for the selected date, surface a hint
+      try {
+        if (!rosterFile && (adjRes.stats.added + adjRes.stats.removed) === 0) {
+          const todayKey = (document.getElementById('date')?.value || '').trim();
+          const hadRows = Array.isArray(adjustments) && adjustments.length > 0;
+          if (hadRows) {
+            const msg = `No adjustments matched current Date ${todayKey}. Ensure the Date column matches the selected date.`;
+            TOAST && TOAST.warn ? TOAST.warn(msg) : console.warn('[ADJUST]', msg);
+          }
+        }
+      } catch(_) { }
+      const presentEmployeeIds = new Set(); // Track which employees are present today
+      
+      console.log(`[DEBUG] Initial roster size: ${combinedRoster.length}`);
+      console.log(`[DEBUG] Daily logins data:`, logins);
+      
+      if (Array.isArray(logins) && logins.length > 0) {
+        console.log(`[DEBUG] Processing ${logins.length} daily login records`);
+        
+        // Extract employee IDs from daily logins to mark as present
+        logins.forEach(loginRecord => {
+          const employeeId = loginRecord['Employee ID'] || loginRecord['ID'] || loginRecord['EID'] || '';
+          if (employeeId) {
+            presentEmployeeIds.add(employeeId.toString());
+            console.log(`[DEBUG] Employee present today: ${employeeId}`);
+          }
+        });
+        
+        console.log(`[DEBUG] Found ${presentEmployeeIds.size} present employees from daily logins`);
+      }
+      
+      // Filter roster to only include present employees if daily logins provided
+      if (presentEmployeeIds.size > 0) {
+        const originalCount = combinedRoster.length;
+        combinedRoster = combinedRoster.filter(employee => {
+          const employeeId = (employee['Employee ID'] || employee['ID'] || employee['EID'] || '').toString();
+          const forced = employee['_isUploaded'] === true || employee['_forceInclude'] === true;
+          return forced || presentEmployeeIds.has(employeeId);
+        });
+        
+        console.log(`[DEBUG] Filtered roster from ${originalCount} to ${combinedRoster.length} present associates`);
+      }
+
+  // Treat force-included rows as active regardless of status
+  const activeRows = combinedRoster.filter(r => (String(r['Employee Status'] ?? r.Status ?? '').toLowerCase() === 'active') || r._forceInclude === true);
+
+      if (combinedRoster.length > 0 && filteredPreviewNeeded(combinedRoster, activeRows)){
+        // if parsing succeeded but no "active" rows found, give immediate guidance
+        const keys = combinedRoster[0] ? Object.keys(combinedRoster[0]) : [];
+        output.textContent = `Parsed ${combinedRoster.length} rows (${logins.length || 0} daily logins). No active rows matched filters. Detected headers: ${keys.join(', ')}.`;
+        console.warn('[build] no active rows after filtering; headers=', keys);
+      }
+
+      // STEP 1: UPDATE DATABASE with ALL active associates (regardless of site)
+      console.log('[DATABASE] Updating database with ALL active associates...');
+      if (DATABASE && activeRows.length > 0) {
+        let dbAddedCount = 0;
+        let dbUpdatedCount = 0;
+        
+        activeRows.forEach(r => {
+          const eid = String(r['Employee ID'] ?? r['ID'] ?? r['EID'] ?? r['Employee Number'] ?? '').trim();
+          const handle = String(r['User ID'] ?? r['Handle'] ?? r['Employee Handle'] ?? r['Login'] ?? '').trim();
+          const name = String(r['Employee Name'] ?? r['Name'] ?? r['Full Name'] ?? '').trim();
+          const sc = shiftCodeOf(r['Shift Pattern'] ?? r['ShiftCode'] ?? r['Shift Code'] ?? r['Shift'] ?? r['Pattern']);
+          const site = classifySite(r);
+          
+          if ((!eid && !handle) || !name) return; // Skip invalid records
+          
+          const existing = DATABASE.getEmployee(handle || eid);
+          const employeeData = {
+            eid: eid,
+            userId: handle,
+            name: name,
+            scode: sc,
+            site: site,
+            status: r['Employee Status'] ?? r.Status ?? 'Active',
+            departmentId: r['Department ID'],
+            managementAreaId: r['Management Area ID'],
+            shiftPattern: r['Shift Pattern'],
+            lastSeen: new Date().toISOString(),
+            _forceInclude: !!(r._forceInclude || r._isUploaded),
+            badgeBarcodeId: String(r['Badge Barcode ID'] ?? r['BadgeBarcodeID'] ?? r['Barcode'] ?? '').trim()
+          };
+          
+          if (existing) {
+            // Update existing employee
+            Object.assign(existing, employeeData);
+            dbUpdatedCount++;
+          } else {
+            // Add new employee
+            DATABASE.addEmployee(employeeData);
+            dbAddedCount++;
+          }
+        });
+        
+        DATABASE.saveDatabase();
+        console.log(`[DATABASE] Updated database: ${dbAddedCount} added, ${dbUpdatedCount} updated from ${activeRows.length} active associates`);
+      }
+
+    // STEP 2: Filter for DISPLAY only (based on selected site and shift)
+  let filtered = activeRows.filter(r => {
+        const site = classifySite(r);
+        const sc = shiftCodeOf(r['Shift Pattern'] ?? r['ShiftCode'] ?? r['Shift Code'] ?? r['Shift'] ?? r['Pattern']);
+        const isUploaded = r['_isUploaded'] === true;
+        
+        if (isUploaded) {
+          console.log(`[DEBUG] Filtering uploaded associate:`, {
+            name: r['Employee Name'],
+            id: r['Employee ID'],
+            deptId: r['Department ID'],
+            mgmtArea: r['Management Area ID'],
+            classifiedSite: site,
+            selectedSite: siteSel,
+            shiftCode: sc,
+            shiftPattern: r['Shift Pattern']
+          });
+        }
+        
+        // Site filtering: YHM2 is separate, YDD2/YDD4 share associate pool
+        if (siteSel === 'YHM2' && site !== 'YHM2') return false;
+        if ((siteSel === 'YDD2' || siteSel === 'YDD4') && (site !== 'YHM2' && site !== 'YDD_SHARED')) return false;
+        if (!allowed.has(sc)) return false;
+        if (shiftSel === 'day' && !DAY_SET.has(sc)) return false;
+        if (shiftSel === 'night' && !NIGHT_SET.has(sc)) return false;
+        return true;
+      });
+
+      // If adjustments requested additions but none made it through filters (edge cases),
+      // ensure force-included associates appear by hydrating from DATABASE via User ID
+      try {
+        const forceList = Array.isArray(window.VLAB_ADJUST_FORCE_IDS) ? window.VLAB_ADJUST_FORCE_IDS : [];
+        if (forceList.length) {
+          const presentHandles = new Set(filtered.map(r => String(r['User ID']||'').toLowerCase()));
+          forceList.forEach(uidKey => {
+            const handle = String(uidKey||'').toLowerCase();
+            if (!handle || presentHandles.has(handle)) return;
+            const dbEmp = (window.DATABASE && DATABASE.getEmployee) ? DATABASE.getEmployee(handle) : null;
+            if (!dbEmp) return;
+            const synth = {
+              'Employee Name': dbEmp.name || handle,
+              'Employee ID': dbEmp.eid || handle,
+              'Employee Status': 'Active',
+              'Shift Pattern': dbEmp.shiftPattern || dbEmp.scode || ((resolvedShift||'day')==='day'?'DA':'NA'),
+              'User ID': dbEmp.userId || handle,
+              'Department ID': dbEmp.departmentId,
+              'Management Area ID': dbEmp.managementAreaId,
+              site: dbEmp.site || ((resolvedSite||'YHM2')==='YHM2' ? 'YHM2' : 'YDD_SHARED'),
+              _isUploaded: true,
+              _forceInclude: true
+            };
+            // Apply site/shift gating for display
+            const siteX = classifySite(synth);
+            const scX = shiftCodeOf(synth['Shift Pattern']);
+            if (siteSel === 'YHM2' && siteX !== 'YHM2') return;
+            if ((siteSel === 'YDD2' || siteSel === 'YDD4') && (siteX !== 'YHM2' && siteX !== 'YDD_SHARED')) return;
+            if (!allowed.has(scX)) return;
+            if (shiftSel === 'day' && !DAY_SET.has(scX)) return;
+            if (shiftSel === 'night' && !NIGHT_SET.has(scX)) return;
+            filtered.push(synth);
+          });
+        }
+      } catch (e) { console.warn('[ADJUST-FORCE] fallback include skipped', e); }
+
+      // Set default empty arrays for old file types that are no longer used
+  // Adjustment counts from upload (if any)
+  const adj = (window.VLAB_ADJUST_STATS || { SWAPIN:0, SWAPOUT:0, VET:0, VTO:0 });
+  const swaps = []; // Legacy placeholders
+  const vetvto = []; // Legacy placeholders  
+      const labshare = []; // Simplified system doesn't use labor share files
+
+      const swapIN  = adj.SWAPIN + swaps.filter(x => ((x.Direction ?? x.direction) ?? '').toString().toUpperCase() === 'IN').length;
+      const swapOUT = adj.SWAPOUT + swaps.filter(x => ((x.Direction ?? x.direction) ?? '').toString().toUpperCase() === 'OUT').length;
+      const vet = adj.VET + vetvto.filter(x => {
+        const t = ((x.Type ?? x.type) ?? '').toString().toUpperCase();
+        const acc = ((x.Accepted ?? x.Status) ?? '').toString().toUpperCase();
+        return t === 'VET' && (!acc || acc === 'YES' || acc === 'ACCEPTED');
+      }).length;
+      const vto = adj.VTO + vetvto.filter(x => {
+        const t = ((x.Type ?? x.type) ?? '').toString().toUpperCase();
+        const acc = ((x.Accepted ?? x.Status) ?? '').toString().toUpperCase();
+        return t === 'VTO' && (!acc || acc === 'YES' || acc === 'ACCEPTED');
+      }).length;
+      const lsIN  = labshare.filter(x => (x.Direction ?? x.direction ?? '').toString().toUpperCase() === 'IN').length;
+      const lsOUT = labshare.filter(x => (x.Direction ?? x.direction ?? '').toString().toUpperCase() === 'OUT').length;
+
+      const baseHC = filtered.length;
+      const presentInFiltered = presentEmployeeIds.size > 0 ? filtered.length : 0;
+      console.log(`[DEBUG] After filtering: ${baseHC} total, ${presentInFiltered} from daily logins`);
+      
+      // Site summary for clarity
+      console.log(`[SITE-FILTER] Selected site: ${siteSel}`);
+      console.log(`[SITE-FILTER] Associates loaded for ${siteSel}: ${baseHC}` + 
+        (presentEmployeeIds.size > 0 ? ` (filtered by ${presentEmployeeIds.size} daily logins)` : ''));
+      
+      // Debug: Show what was filtered out
+      const totalBeforeFilter = combinedRoster.length;
+      const filteredOutCount = totalBeforeFilter - baseHC;
+      if (filteredOutCount > 0) {
+        console.log(`[SITE-FILTER] Filtered out ${filteredOutCount} associates not matching ${siteSel} criteria`);
+        
+        // Show breakdown of filtered associates by site
+        const siteBreakdown = {};
+        combinedRoster.forEach(r => {
+          const site = classifySite(r);
+          siteBreakdown[site] = (siteBreakdown[site] || 0) + 1;
+        });
+        console.log(`[SITE-FILTER] Site breakdown in roster:`, siteBreakdown);
+      }
+      
+      const plannedHC = baseHC - swapOUT + swapIN + vet - vto + lsIN - lsOUT;
+      elPlan.textContent = String(plannedHC); elActual.textContent = '0';
+      // Expose counts for Roster Overview chips
+      try {
+        window.VLAB_REGULAR_HC = baseHC;
+        window.VLAB_UPLOADED_LOGINS = presentEmployeeIds.size || 0;
+      } catch(_) {}
+
+  STATE.badges = {};
+  STATE.barcodeMap = {};   // BadgeBarcodeID → badge object
+  STATE.eidMap = {};       // EID → badge object
+
+      filtered.forEach((r, idx) => {
+        const name = String(r['Employee Name'] ?? r['Name'] ?? r['Full Name'] ?? '').trim();
+        const eid  = String(r['Employee ID'] ?? r['ID'] ?? r['EID'] ?? r['Employee Number'] ?? '').trim();
+        const sc   = shiftCodeOf(r['Shift Pattern'] ?? r['ShiftCode'] ?? r['Shift Code'] ?? r['Shift'] ?? r['Pattern']);
+        const classifiedSite = classifySite(r); // Get the actual classified site for this associate
+        
+        // For YDD_SHARED associates, assign them to the currently selected site (YDD2 or YDD4)
+        const actualSite = classifiedSite === 'YDD_SHARED' ? siteSel : classifiedSite;
+        
+        // Expanded barcode headers to catch more variations
+        const badgeBarcodeId = String(r['Badge Barcode ID'] ?? r['BadgeBarcodeID'] ?? r['Barcode'] ?? r['Badge ID'] ?? r['BadgeId'] ?? r['Badge'] ?? '').trim();
+        const handle = String(r['User ID'] ?? r['Handle'] ?? r['Employee Handle'] ?? r['Login'] ?? '').trim();
+        const photo = String(r['Photo'] ?? r['Photo URL'] ?? r['Image'] ?? '').trim();
+        const id   = `b_${eid || idx}_${Math.random().toString(36).slice(2,8)}`;
+        const isUploaded = r['_isUploaded'] === true; // Check if this came from upload
+        STATE.badges[id] = { id, name, eid, scode: sc, site: actualSite, present:false, loc:'unassigned', badgeBarcodeId, handle, photo, isUploaded };
+
+        // Populate lookup maps
+        if (badgeBarcodeId) STATE.barcodeMap[badgeBarcodeId] = STATE.badges[id];
+        if (eid) STATE.eidMap[eid] = STATE.badges[id];
+      });
+
+      if (Object.keys(STATE.badges).length === 0){
+        output.textContent = 'No badges created — check CSV headers and active status field.';
+        console.warn('[build] no badges in STATE.badges');
+      }
+  // Ensure multi-site state is properly initialized
+      try {
+        MULTISITE.ensureCurrentSiteSync();
+        console.log('[DEBUG] Multi-site state synchronized');
+      } catch(err) {
+        console.warn('[DEBUG] Multi-site sync warning:', err);
+      }
+      
+      renderAllBadges();
+      
+      // Apply site and shift filtering after initial render
+      applySiteFilter();
+      setCounts();
+    try{ renderHeadcountOverview(); }catch(err){ console.warn('[HEADCOUNT] render skipped:', err); }
+      
+      // Snapshot initial quarter state (preserve existing assignments)
+      try{ 
+        STATE.quarterAssignments[STATE.currentQuarter] = STATE.quarterAssignments[STATE.currentQuarter] || {}; 
+        Object.values(STATE.badges).forEach(b => { 
+          STATE.quarterAssignments[STATE.currentQuarter][b.id] = b.loc; 
+        }); 
+      }catch(_){ }
+      setupVPH(plannedHC);
+      
+      // Show site-specific summary in output
+      const databaseMessage = DATABASE ? 
+        (Object.keys(STATE.badges).length > 0 ? ` | Database updated with ${Object.keys(STATE.badges).length} associates` : '') : '';
+      
+      const siteMessage = `📋 Schedule Board Ready: ${baseHC} associates for ${siteSel}` + 
+        (presentEmployeeIds.size > 0 ? ` (filtered by ${presentEmployeeIds.size} daily logins)` : '') +
+        ((window.VLAB_ADJUST_STATS && (window.VLAB_ADJUST_STATS.SWAPIN || window.VLAB_ADJUST_STATS.SWAPOUT || window.VLAB_ADJUST_STATS.VET || window.VLAB_ADJUST_STATS.VTO))
+          ? ` | Adjustments: +${(window.VLAB_ADJUST_STATS.SWAPIN||0)+(window.VLAB_ADJUST_STATS.VET||0)} / -${(window.VLAB_ADJUST_STATS.SWAPOUT||0)+(window.VLAB_ADJUST_STATS.VTO||0)}`
+          : '') +
+        databaseMessage;
+      output.innerHTML = `<div style="color: #059669; font-weight: 500;">${siteMessage}</div>`;
+      if (window.VLAB_ADJUST_STATS) {
+        const a = window.VLAB_ADJUST_STATS;
+        const plus = (a.SWAPIN||0) + (a.VET||0); const minus = (a.SWAPOUT||0) + (a.VTO||0);
+        if (plus || minus) {
+          try { TOAST.show(`Adjusted: +${plus} / -${minus}`, 'info'); } catch(_) { console.log(`[ADJUST] Net +${plus} / -${minus}`); }
+        }
+      }
+      
+      console.log('[BUILD-COMPLETE] Board ready with site-filtered associates');
+
+      // Start analytics session
+      ANALYTICS.endSession(); // End any existing session
+      const loginsCount = logins.length || 0;
+      const sessionNotes = loginsCount > 0 
+        ? `Roster: ${rosterFile.name} + ${loginsCount} daily logins, Badges: ${Object.keys(STATE.badges).length}`
+        : `Roster: ${rosterFile.name}, Badges: ${Object.keys(STATE.badges).length}`;
+        
+      ANALYTICS.startSession({
+        date: dateStr,
+        shift: shiftSel,
+        site: siteSel,
+        plannedHC: plannedHC,
+        notes: sessionNotes
+      });
+      
+      if (presentEmployeeIds.size > 0) {
+        console.log(`[SUCCESS] Loaded ${Object.keys(STATE.badges).length} badges filtered by ${presentEmployeeIds.size} daily logins`);
+      }
+
+      // persist compact snapshot so user can reload without re-uploading CSV
+      try{
+        // Initialize current site to the selected site from form
+        STATE.currentSite = siteSel;
+        
+        // Save current assignments before creating snapshot
+        MULTISITE.saveCurrentSiteAssignments();
+        
+        const snap = { 
+          badges: STATE.badges, 
+          sites: STATE.sites,
+          currentSite: STATE.currentSite,
+          meta: { date: dateStr, shift: shiftSel, site: siteSel, plannedHC, quarter: STATE.currentQuarter } 
+        };
+        
+        // Debug: Log what we're saving
+        const assignedBadges = Object.values(STATE.badges).filter(b => b.loc !== 'unassigned');
+        const siteAssignmentCount = STATE.sites[STATE.currentSite] ? Object.keys(STATE.sites[STATE.currentSite].assignments).length : 0;
+        console.debug('[save] Saving roster with', assignedBadges.length, 'assigned badges and', siteAssignmentCount, 'site assignments');
+        
+        // Database was already updated earlier in the process
+        console.log('[DATABASE] Database was updated earlier with all associates');
+        
+        localStorage.setItem('vlab:lastRoster', JSON.stringify(snap));
+        console.debug('[save] saved roster snapshot with multi-site data to localStorage (vlab:lastRoster)');
+        
+        // Update file labels to show processed files (preserves form state visually)
+        if (currentFormState.rosterFileName) {
+          const rosterLabel = document.getElementById('label-roster');
+          if (rosterLabel) {
+            rosterLabel.textContent = `✅ ${currentFormState.rosterFileName}`;
+            rosterLabel.style.color = '#059669';
+          }
+        }
+        
+        if (currentFormState.loginsFileName) {
+          const loginsLabel = document.getElementById('label-logins');
+          if (loginsLabel) {
+            loginsLabel.textContent = `✅ ${currentFormState.loginsFileName}`;
+            loginsLabel.style.color = '#059669';
+          }
+        }
+          if (currentFormState.adjustmentsFileName) {
+            const adjLabel = document.getElementById('label-adjustments');
+            if (adjLabel) {
+              adjLabel.textContent = `✅ ${currentFormState.adjustmentsFileName}`;
+              adjLabel.style.color = '#a16207';
+            }
+          }
+        
+        console.log('[DEBUG] Form state preserved after processing');
+        
+        // Clear form processing flag
+        isFormProcessing = false;
+        console.log('[FORM] Form processing completed, auto-load re-enabled');
+      }catch(_){ /* ignore storage failures */ }
+    }).catch(err => { 
+      console.error('[DEBUG] Form submission error:', err); 
+      output.textContent = `Error processing files: ${err.message || err}. Please check CSV headers and try again.`;
+      
+      // Clear form processing flag even on error
+      isFormProcessing = false;
+      console.log('[FORM] Form processing failed, auto-load re-enabled');
+    });
+  });
+  } else {
+    console.warn('[DEBUG] Form not found, submit handler not attached');
+  }
 
 
 
@@ -4165,7 +8543,13 @@ document.addEventListener('DOMContentLoaded', () => {
         STATE.badges[bid].loc = newLoc;
         STATE.quarterAssignments[newQ][bid] = newLoc;
         // Log as reassignment under new quarter
-        ANALYTICS.logAssignment(bid, oldLoc, newLoc);
+        const badgeSite = (window.MULTISITE && MULTISITE.getBadgeAssignmentSite(bid)) || STATE.badges[bid].site || STATE.currentSite;
+        ANALYTICS.logAssignment({
+            badgeId: bid,
+            fromLoc: oldLoc,
+            toLoc: newLoc,
+            site: badgeSite
+        });
       } else {
         STATE.quarterAssignments[newQ][bid] = 'unassigned';
       }
@@ -4174,7 +8558,11 @@ document.addEventListener('DOMContentLoaded', () => {
     try{ localStorage.setItem('vlab:quarterAssignments', JSON.stringify(STATE.quarterAssignments)); }catch(_){ }
   }
 
-  function isQuarterLocked(q){ return !!(STATE.quarterLocks && STATE.quarterLocks[q]); }
+  function isQuarterLocked(q){ 
+    const site = STATE.currentSite || 'YDD2';
+    const key = `${site}_${q}`;
+    return !!(STATE.quarterLocks && (STATE.quarterLocks[key] || STATE.quarterLocks[q])); 
+  }
   function handleQuarterChange(){
     const newQ = (quarterSelect && quarterSelect.value) || 'Q1';
     const prevQ = STATE.currentQuarter;
@@ -4611,13 +8999,18 @@ document.addEventListener('DOMContentLoaded', () => {
     let rows = (STATE.analytics.history || []).slice();
     if (filterQuarter !== 'all') rows = rows.filter(r => r.quarter === filterQuarter);
 
+    // Filter out system lock events to prevent duplicates in view
+    rows = rows.filter(r => r.action !== 'lock');
+
     // Render table
     const toRow = (r) => {
-      const path = mapProcessToPath(r.toLocation || '').toUpperCase();
+      // Use stored processPath if available, otherwise calculate it on the fly
+      const path = r.processPath || getTilePathName(r.toLocation || '');
       return `
         <tr>
           <td class="px-3 py-1">${r.employeeId || ''}</td>
           <td class="px-3 py-1">${r.employeeName || ''}</td>
+          <td class="px-3 py-1">${r.site || ''}</td>
           <td class="px-3 py-1">${path}</td>
           <td class="px-3 py-1">${r.action || ''}</td>
           <td class="px-3 py-1">${new Date(r.timestamp).toLocaleString()}</td>
@@ -4783,22 +9176,48 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // --- Helpers: Map granular process keys to Pick/Sort/Dock groups ---
+  // --- Helpers: Map granular process keys to exact display names ---
+  function getTilePathName(key) {
+    if (!key) return 'Unassigned';
+    
+    // Strip site prefix if present (e.g. "YDD2/cb" -> "cb")
+    let k = String(key).toLowerCase();
+    if (k.includes('/')) {
+      k = k.split('/').pop();
+    }
+    
+    if (k === 'unassigned') return 'Unassigned';
+
+    const map = {
+      'cb': 'CB',
+      'ibws': 'IB WS',
+      'lineloaders': 'Line Loaders',
+      'trickle': 'Trickle',
+      'dm': 'DM',
+      'idrt': 'IDRT',
+      'pb': 'PB',
+      'e2s': 'Each to Sort',
+      'dockws': 'Dock WS',
+      'e2sws': 'E2S WS',
+      'tpb': 'TPB',
+      'tws': 'TWS',
+      'sap': 'SAP',
+      'ao5s': 'AO 5S',
+      'pa': 'PA',
+      'ps': 'PS',
+      'laborshare': 'Labor Share',
+      'dock': 'Dock',
+      'sort': 'Sort',
+      'pick': 'Pick',
+      'pack': 'Pack'
+    };
+    
+    return map[k] || k.toUpperCase();
+  }
+
+  // Deprecated: Alias to new function for backward compatibility
   function mapProcessToPath(key) {
-    if (!key) return 'SORT';
-    const k = String(key).toLowerCase();
-    // Note: This grouping is a placeholder; adjust based on your site's taxonomy
-    const PICK = new Set(['pick','pa','ps']);
-    const SORT = new Set(['e2s','e2sws','tws','sap','dm','idrt','each to sort']);
-    const DOCK = new Set(['dock','dockws','pb','tpb','lineloaders','pallet build','line loaders']);
-    if (PICK.has(k)) return 'PICK';
-    if (SORT.has(k)) return 'SORT';
-    if (DOCK.has(k)) return 'DOCK';
-    // Try prefix/contains matching
-    if (k.includes('dock')) return 'DOCK';
-    if (k.includes('pick')) return 'PICK';
-    if (k.includes('sort') || k.includes('e2s') || k.includes('tote') || k.includes('sap') || k.includes('dm')) return 'SORT';
-    return 'SORT';
+    return getTilePathName(key);
   }
 
   function loadInsightsContent() {
@@ -5283,8 +9702,14 @@ document.addEventListener('DOMContentLoaded', () => {
       STATE.currentQuarter = selectedQuarter;
     }
     const currQ = STATE.currentQuarter || 'Q1';
-    if (STATE.quarterLocks && STATE.quarterLocks[currQ]){ alert(`Quarter ${currQ} is already locked.`); return; }
-    const confirmMessage = `Lock ${assignedBadges.length} assignments for ${currQ}?\n\nThis will:\n• Freeze current quarter assignments\n• Include quarter in analytics logs\n• Generate smart rotation recommendations\n\nProceed?`;
+    const site = STATE.currentSite || 'YDD2';
+    const lockKey = `${site}_${currQ}`;
+    
+    if (STATE.quarterLocks && (STATE.quarterLocks[lockKey] || STATE.quarterLocks[currQ])){ 
+      alert(`Quarter ${currQ} is already locked for ${site}.`); 
+      return; 
+    }
+    const confirmMessage = `Lock ${assignedBadges.length} assignments for ${site} - ${currQ}?\n\nThis will:\n• Freeze current quarter assignments for ${site}\n• Include quarter in analytics logs\n• Generate smart rotation recommendations\n\nProceed?`;
     
     if (!confirm(confirmMessage)) return;
     
@@ -5293,7 +9718,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const lockRecord = ANALYTICS.ROTATION.lockQuarter(currQ);
       
       if (lockRecord) {
-  alert(`✅ ${currQ} Locked!\n\n• Assignments frozen for ${currQ}\n• Rotation insights updated\n• Use Quarter dropdown to work on other quarters.`);
+  alert(`✅ ${site} - ${currQ} Locked!\n\n• Assignments frozen for ${site} ${currQ}\n• Rotation insights updated\n• Use Quarter dropdown to work on other quarters.`);
       }
     } catch (error) {
       console.error('[LOCK] Error locking assignments:', error);
@@ -5504,6 +9929,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Associate input handler
       const associateInput = document.getElementById('scan_associate_input');
+      const associateBtn = document.getElementById('scan_associate_btn');
+      
       if (associateInput) {
         associateInput.addEventListener('keypress', (e) => {
           if (e.key === 'Enter') {
@@ -5511,6 +9938,14 @@ document.addEventListener('DOMContentLoaded', () => {
             this.handleAssociateScan(associateInput.value.trim());
             associateInput.value = '';
           }
+        });
+      }
+      
+      if (associateBtn && associateInput) {
+        associateBtn.addEventListener('click', () => {
+          this.handleAssociateScan(associateInput.value.trim());
+          associateInput.value = '';
+          associateInput.focus();
         });
       }
 
@@ -5564,12 +9999,17 @@ document.addEventListener('DOMContentLoaded', () => {
       const pathDisplay = document.getElementById('scan_current_path_display');
       const pathName = document.getElementById('scan_current_path_name');
       const associateInput = document.getElementById('scan_associate_input');
+      const associateBtn = document.getElementById('scan_associate_btn');
 
       if (pathDisplay && pathName && associateInput) {
         pathDisplay.classList.remove('hidden');
         pathName.textContent = pathKey;
         associateInput.disabled = false;
+        if (associateBtn) associateBtn.disabled = false;
         associateInput.focus();
+        
+        // Populate unassigned dropdown when path is set
+        this.populateUnassignedDropdown();
       }
 
       this.showStatus('success', `Path set to: ${pathKey} - Ready to scan associates`);
@@ -5615,38 +10055,117 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
+      // Check for existing assignment
+      const existingPath = this.getCurrentAssignment(associate);
+
+      if (existingPath && existingPath !== this.currentPath) {
+          const msg = `${associate.name} is already assigned to ${existingPath}. 
+      Do you want to move them to ${this.currentPath}?`;
+          const ok = window.confirm(msg);
+          if (!ok) {
+              this.showStatus('info', 'Assignment cancelled');
+              return;
+          }
+      }
+
       // Record the assignment
-      this.recordAssignment(associate);
+      this.recordAssignment(associate, existingPath);
     },
 
     // Find associate in STATE.badges or DATABASE
-    findAssociate(searchValue) {
-      const search = searchValue.toLowerCase();
+    findAssociate(scannedValue) {
+      if (!scannedValue) return null;
 
-      // Search in STATE.badges first
-      for (const badgeId in STATE.badges) {
-        const badge = STATE.badges[badgeId];
-        if (badge.id.toLowerCase() === search || 
-            badge.eid.toLowerCase() === search ||
-            badge.name.toLowerCase().includes(search)) {
-          return badge;
-        }
+      const raw = scannedValue.trim();
+
+      // 1. Badge Barcode FIRST
+      if (STATE.barcodeMap && STATE.barcodeMap[raw]) {
+          return STATE.barcodeMap[raw];
       }
 
-      // Search in DATABASE
-      if (window.DATABASE) {
-        const employees = DATABASE.getAllEmployees();
-        for (const emp of employees) {
-          if (emp.id?.toLowerCase() === search ||
-              emp.eid?.toLowerCase() === search ||
-              emp.employeeId?.toLowerCase() === search ||
-              emp.name?.toLowerCase().includes(search)) {
-            return emp;
+      // 2. EID SECOND
+      if (STATE.eidMap && STATE.eidMap[raw]) {
+          return STATE.eidMap[raw];
+      }
+
+      // 3. Fallback to existing STATE.badges scan (slow)
+      const foundInRoster = Object.values(STATE.badges).find(
+          b => String(b.badgeBarcodeId) === raw || String(b.eid) === raw
+      );
+      
+      if (foundInRoster) return foundInRoster;
+
+      // 4. Fallback to DATABASE (if not in roster)
+      // This is critical for scanning associates who are not in the daily roster but exist in the system
+      if (window.DATABASE && typeof DATABASE.getEmployee === 'function') {
+          // Try to find by barcode in the full database
+          const allEmployees = DATABASE.getAllEmployees();
+          const foundInDB = allEmployees.find(emp => 
+              String(emp.badgeBarcodeId || emp.BadgeBarcodeID || emp.barcode || emp.Barcode || '') === raw ||
+              String(emp.eid || emp.EmployeeID || emp.id || '') === raw
+          );
+          
+          if (foundInDB) {
+              // Return a badge-like object that recordAssignment can use
+              return {
+                  id: foundInDB.id || `b_${foundInDB.eid || foundInDB.EmployeeID}`,
+                  name: foundInDB.name || foundInDB.EmployeeName,
+                  eid: foundInDB.eid || foundInDB.EmployeeID,
+                  scode: foundInDB.scode || foundInDB.ShiftPattern,
+                  site: foundInDB.site || foundInDB.Site,
+                  badgeBarcodeId: foundInDB.badgeBarcodeId || foundInDB.BadgeBarcodeID,
+                  userId: foundInDB.userId || foundInDB.UserID
+              };
           }
-        }
       }
 
       return null;
+    },
+
+    // Get current assignment for a badge
+    getCurrentAssignment(badge) {
+      const site = STATE.currentSite;
+      return STATE.sites[site]?.assignments?.[badge.id] || null;
+    },
+
+    // Populate unassigned dropdown
+    populateUnassignedDropdown() {
+        const site = STATE.currentSite;
+        const shift = STATE.currentShift;
+        const date = STATE.currentDate;
+
+        const list = Object.values(STATE.badges)
+            .filter(b => 
+                b.loc === 'unassigned' &&
+                shouldShowBadge(b, site, shift, date) &&
+                !this.getCurrentAssignment(b)
+            );
+
+        const select = document.getElementById('scan_unassigned_select');
+        if (!select) return;
+
+        select.innerHTML = '<option value="">-- Select Unassigned --</option>';
+
+        // Sort by name
+        list.sort((a, b) => a.name.localeCompare(b.name));
+
+        list.forEach(b => {
+            const opt = document.createElement('option');
+            opt.value = b.id;
+            // Show Name (EID) or Name (UserID) if EID missing
+            const identifier = b.eid || b.handle || b.id;
+            opt.textContent = `${b.name} (${identifier})`;
+            select.appendChild(opt);
+        });
+        
+        // Add listener if not present (simple check)
+        select.onchange = (e) => {
+             if(e.target.value) {
+                 const b = STATE.badges[e.target.value];
+                 if(b) this.handleAssociateScan(b.eid || b.id);
+                 e.target.value = "";
+             }
+        };
     },
 
     // Validate site eligibility
@@ -5677,106 +10196,88 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     // Record manual scan assignment
-    recordAssignment(associate) {
-      const timestamp = Date.now();
-      const badgeId = associate.id || associate.eid;
-      
-      // Update badge location if in STATE.badges
-      if (STATE.badges[badgeId]) {
-        const oldLoc = STATE.badges[badgeId].loc;
-        STATE.badges[badgeId].loc = this.currentPath;
-        
-        // Update site assignments
-        Object.keys(STATE.sites).forEach(siteCode => {
-          delete STATE.sites[siteCode].assignments[badgeId];
-        });
-        STATE.sites[this.sessionContext.site].assignments[badgeId] = this.currentPath;
+    recordAssignment(associate, oldPath = null) {
+      const site = this.sessionContext.site || STATE.currentSite;
 
-        console.log(`[MANUAL_SCAN] Moved ${associate.name}: ${oldLoc} → ${this.currentPath}`);
+      if (!STATE.sites[site]) STATE.sites[site] = {};
+      if (!STATE.sites[site].assignments) STATE.sites[site].assignments = {};
+
+      // Write using internal ID
+      STATE.sites[site].assignments[associate.id] = this.currentPath;
+
+      // Sync loc in memory
+      if (STATE.badges[associate.id]) {
+         STATE.badges[associate.id].loc = this.currentPath;
+      } else {
+         // Associate found in DB but not in current roster - add them!
+         STATE.badges[associate.id] = {
+             id: associate.id,
+             name: associate.name,
+             eid: associate.eid,
+             scode: associate.scode || 'DA',
+             site: associate.site || site,
+             present: true,
+             loc: this.currentPath,
+             badgeBarcodeId: associate.badgeBarcodeId || associate.BadgeBarcodeID,
+             handle: associate.userId || associate.UserID,
+             photo: '',
+             isUploaded: false
+         };
+         
+         // Update lookup maps for the newly added associate
+         if (STATE.badges[associate.id].badgeBarcodeId) {
+             if (!STATE.barcodeMap) STATE.barcodeMap = {};
+             STATE.barcodeMap[STATE.badges[associate.id].badgeBarcodeId] = STATE.badges[associate.id];
+         }
+         if (STATE.badges[associate.id].eid) {
+             if (!STATE.eidMap) STATE.eidMap = {};
+             STATE.eidMap[STATE.badges[associate.id].eid] = STATE.badges[associate.id];
+         }
+         
+         console.log(`[MANUAL_SCAN] Added ${associate.name} to active roster from database`);
       }
 
-      // Log to analytics history
-      if (STATE.analytics && STATE.analytics.history) {
-        const historyEntry = {
-          badgeId: badgeId,
-          name: associate.name,
-          eid: associate.eid || associate.employeeId,
-          action: 'assign',
-          fromLocation: 'manual_scan_entry',
-          toLocation: this.currentPath,
-          timestamp: timestamp,
-          quarter: STATE.currentQuarter || 'Q1',
-          method: 'manual_scan',
-          scanContext: {
-            date: this.sessionContext.date,
-            shift: this.sessionContext.shift,
-            site: this.sessionContext.site,
-            shiftCode: this.sessionContext.shiftCode,
-            scanner: 'manual'
-          }
+      // Save immediately
+      if (window.DATABASE && typeof DATABASE.saveAssignments === 'function') {
+          DATABASE.saveAssignments(STATE.sites);
+      }
+
+      // Analytics logging
+      if (window.ANALYTICS && ANALYTICS.logAssignment) {
+          ANALYTICS.logAssignment({
+             badgeId: associate.id,
+             name: associate.name,
+             eid: associate.eid,
+             site,
+             path: this.currentPath,
+             fromLocation: oldPath || 'manual_scan',
+             action: 'assign',
+             source: 'manual_scan'
+          });
+      }
+
+      // Push to scan history
+      this.addRecentScan(associate, this.currentPath);
+
+      // Refresh dropdown
+      this.populateUnassignedDropdown();
+
+      this.showStatus('success', `${associate.name} → ${this.currentPath}`);
+    },
+
+    // Add to recent scans
+    addRecentScan(associate, path) {
+        const entry = {
+            associate: associate.name,
+            badgeId: associate.eid || associate.id,
+            pathDisplay: path.toUpperCase(),
+            timestamp: Date.now()
         };
-
-        STATE.analytics.history.push(historyEntry);
         
-        // Update performance metrics
-        if (!STATE.analytics.performance[badgeId]) {
-          STATE.analytics.performance[badgeId] = {
-            totalAssignments: 0,
-            processExperience: {},
-            lastAssignment: null
-          };
-        }
-
-        const perf = STATE.analytics.performance[badgeId];
-        perf.totalAssignments += 1;
-        perf.lastAssignment = timestamp;
+        this.scanHistory.unshift(entry);
+        if (this.scanHistory.length > 50) this.scanHistory.pop();
         
-        if (!perf.processExperience[this.currentPath]) {
-          perf.processExperience[this.currentPath] = { count: 0, lastDate: null };
-        }
-        perf.processExperience[this.currentPath].count += 1;
-        perf.processExperience[this.currentPath].lastDate = timestamp;
-
-        console.log(`[MANUAL_SCAN] Logged to analytics:`, historyEntry);
-      }
-
-      // Add to scan history
-      this.scanHistory.unshift({
-        timestamp: timestamp,
-        associate: associate.name,
-        badgeId: badgeId,
-        path: this.currentPath,
-        pathDisplay: Object.keys(this.PATH_MAP).find(k => this.PATH_MAP[k] === this.currentPath),
-        site: this.sessionContext.site
-      });
-
-      // Keep last 50 scans
-      if (this.scanHistory.length > 50) {
-        this.scanHistory = this.scanHistory.slice(0, 50);
-      }
-
-      // Update UI
-      this.showStatus('success', `✓ ${associate.name} assigned to ${this.currentPath.toUpperCase()}`);
-      this.updateRecentScans();
-      
-      // Re-render board if visible
-      if (typeof renderAllBadges === 'function') {
-        renderAllBadges();
-      }
-      if (typeof setCounts === 'function') {
-        setCounts();
-      }
-
-      // Persist to storage
-      if (typeof saveToLocalStorage === 'function') {
-        saveToLocalStorage();
-      }
-
-      // Focus back to associate input for next scan
-      const associateInput = document.getElementById('scan_associate_input');
-      if (associateInput) {
-        associateInput.focus();
-      }
+        this.updateRecentScans();
     },
 
     // Show status message
@@ -5820,6 +10321,7 @@ document.addEventListener('DOMContentLoaded', () => {
       
       const pathDisplay = document.getElementById('scan_current_path_display');
       const associateInput = document.getElementById('scan_associate_input');
+      const associateBtn = document.getElementById('scan_associate_btn');
 
       if (pathDisplay) {
         pathDisplay.classList.add('hidden');
@@ -5827,6 +10329,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (associateInput) {
         associateInput.disabled = true;
         associateInput.value = '';
+      }
+      if (associateBtn) {
+        associateBtn.disabled = true;
       }
 
       const pathInput = document.getElementById('scan_path_input');

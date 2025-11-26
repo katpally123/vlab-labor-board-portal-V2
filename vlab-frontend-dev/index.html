@@ -212,9 +212,15 @@
   <!-- Site Board Scheduling Controls (moved date/shift/site/quarter/planned volume here) -->
   <div id="siteBoardControls" class="bg-white rounded shadow px-6 py-4 flex flex-wrap gap-6 items-end mb-4 hidden">
     <div class="flex flex-col">
-      <label class="block font-semibold mb-1 text-sm invisible">Fetch</label>
-      <button id="fetchRosterBtn" type="button" title="Fetch associates using Date/Shift/Site"
-              class="border border-green-600 text-green-700 bg-white hover:bg-green-50 rounded px-4 py-2 text-sm font-semibold whitespace-nowrap">🔄 Fetch Roster</button>
+      <label for="siteBoardSiteSelector" class="block font-semibold mb-1 text-sm">Site</label>
+      <select id="siteBoardSiteSelector" class="border p-2 rounded w-28" title="Facility site">
+        <option value="YHM2">YHM2</option>
+        <option value="YDD2">YDD2</option>
+        <option value="YDD4">YDD4</option>
+      </select>
+    </div>
+    <div class="flex flex-col">
+      <label class="block font-semibold mb-1 text-sm invisible">Actions</label>
       <div class="flex gap-2 mt-2">
   <button id="clearBoardBtn" type="button" title="Move all assigned associates back to Unassigned for this site"
     class="border border-amber-600 text-amber-700 bg-white hover:bg-amber-50 rounded px-3 py-1 text-xs font-semibold whitespace-nowrap">🧹 Clear Board</button>
@@ -394,14 +400,24 @@
               <!-- Associate Scanner -->
               <div class="mb-4">
                 <label for="scan_associate_input" class="block font-semibold mb-2 text-sm">2️⃣ Scan Associate Badge</label>
-                <input 
-                  id="scan_associate_input" 
-                  type="text" 
-                  class="border-2 border-blue-400 rounded px-3 py-2 text-lg w-full font-mono" 
-                  placeholder="Scan badge..." 
-                  autocomplete="off"
-                  disabled
-                />
+                <div class="flex gap-2">
+                  <input 
+                    id="scan_associate_input" 
+                    type="text" 
+                    class="border-2 border-blue-400 rounded px-3 py-2 text-lg w-full font-mono" 
+                    placeholder="Scan badge..." 
+                    autocomplete="off"
+                    disabled
+                  />
+                  <button id="scan_associate_btn" class="bg-blue-600 text-white px-4 rounded hover:bg-blue-700 disabled:opacity-50 font-semibold" disabled>Scan</button>
+                </div>
+                <!-- Optional Unassigned Dropdown -->
+                <div class="mt-2">
+                  <label for="scan_unassigned_select" class="block text-xs text-gray-500 mb-1">Or select unassigned associate:</label>
+                  <select id="scan_unassigned_select" class="border rounded px-2 py-1 text-sm w-full bg-gray-50">
+                    <option value="">-- Select Unassigned --</option>
+                  </select>
+                </div>
                 <p class="text-xs text-gray-500 mt-1">Scan or type badge ID / Employee ID</p>
               </div>
 
@@ -431,43 +447,59 @@
           <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
             <div class="bg-white border rounded p-2 text-center">
               <div class="font-mono text-lg font-bold">CB</div>
-              <div class="text-xs text-gray-600">Case Breakdown</div>
+              <div class="text-xs text-gray-600">Counter Balance</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">IBWS</div>
+              <div class="text-xs text-gray-600">Inbound Waterspider</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">LINELOADERS</div>
+              <div class="text-xs text-gray-600">Line Loaders</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">TRICKLE</div>
+              <div class="text-xs text-gray-600">Trickle</div>
             </div>
             <div class="bg-white border rounded p-2 text-center">
               <div class="font-mono text-lg font-bold">DM</div>
-              <div class="text-xs text-gray-600">Decant Mez</div>
+              <div class="text-xs text-gray-600">Destination Markers</div>
+            </div>
+            <div class="bg-white border rounded p-2 text-center">
+              <div class="font-mono text-lg font-bold">IDRT</div>
+              <div class="text-xs text-gray-600">IDRT</div>
             </div>
             <div class="bg-white border rounded p-2 text-center">
               <div class="font-mono text-lg font-bold">PB</div>
-              <div class="text-xs text-gray-600">Pick Buffer</div>
+              <div class="text-xs text-gray-600">Pallet Build</div>
             </div>
             <div class="bg-white border rounded p-2 text-center">
               <div class="font-mono text-lg font-bold">E2S</div>
-              <div class="text-xs text-gray-600">Each to Sorter</div>
+              <div class="text-xs text-gray-600">Each to Sort</div>
             </div>
             <div class="bg-white border rounded p-2 text-center">
               <div class="font-mono text-lg font-bold">DOCKWS</div>
               <div class="text-xs text-gray-600">Dock Waterspider</div>
             </div>
             <div class="bg-white border rounded p-2 text-center">
-              <div class="font-mono text-lg font-bold">IBWS</div>
-              <div class="text-xs text-gray-600">Inbound WS</div>
+              <div class="font-mono text-lg font-bold">E2SWS</div>
+              <div class="text-xs text-gray-600">E2S Waterspider</div>
             </div>
             <div class="bg-white border rounded p-2 text-center">
-              <div class="font-mono text-lg font-bold">OBWS</div>
-              <div class="text-xs text-gray-600">Outbound WS</div>
+              <div class="font-mono text-lg font-bold">TPB</div>
+              <div class="text-xs text-gray-600">Tote Pallet Build</div>
             </div>
             <div class="bg-white border rounded p-2 text-center">
-              <div class="font-mono text-lg font-bold">SORT</div>
-              <div class="text-xs text-gray-600">Sort</div>
+              <div class="font-mono text-lg font-bold">TWS</div>
+              <div class="text-xs text-gray-600">Tote Waterspider</div>
             </div>
             <div class="bg-white border rounded p-2 text-center">
-              <div class="font-mono text-lg font-bold">PACK</div>
-              <div class="text-xs text-gray-600">Pack</div>
+              <div class="font-mono text-lg font-bold">SAP</div>
+              <div class="text-xs text-gray-600">SAP</div>
             </div>
             <div class="bg-white border rounded p-2 text-center">
-              <div class="font-mono text-lg font-bold">CRETS</div>
-              <div class="text-xs text-gray-600">CRETs Process</div>
+              <div class="font-mono text-lg font-bold">AO5S</div>
+              <div class="text-xs text-gray-600">AO / 5S</div>
             </div>
             <div class="bg-white border rounded p-2 text-center">
               <div class="font-mono text-lg font-bold">PA</div>
@@ -475,15 +507,11 @@
             </div>
             <div class="bg-white border rounded p-2 text-center">
               <div class="font-mono text-lg font-bold">PS</div>
-              <div class="text-xs text-gray-600">Problem Solver</div>
+              <div class="text-xs text-gray-600">Problem Solvers</div>
             </div>
             <div class="bg-white border rounded p-2 text-center">
               <div class="font-mono text-lg font-bold">LABORSHARE</div>
               <div class="text-xs text-gray-600">Labor Share</div>
-            </div>
-            <div class="bg-white border rounded p-2 text-center">
-              <div class="font-mono text-lg font-bold">AO5S</div>
-              <div class="text-xs text-gray-600">AO/5S</div>
             </div>
           </div>
         </div>
@@ -597,6 +625,7 @@
                     <tr>
                       <th class="px-3 py-2 text-left">Associate ID</th>
                       <th class="px-3 py-2 text-left">Associate Name</th>
+                      <th class="px-3 py-2 text-left">Site</th>
                       <th class="px-3 py-2 text-left">Process Path</th>
                       <th class="px-3 py-2 text-left">Action</th>
                       <th class="px-3 py-2 text-left">Timestamp</th>
@@ -715,7 +744,10 @@
         }
         // When switching to Site Board, refresh counts/status
         if (target === 'siteBoard') {
-          try { if (typeof setCounts === 'function') setCounts(); } catch(_){ }
+          try { 
+            if (typeof setCounts === 'function') setCounts(); 
+            if (typeof window.renderAllBadges === 'function') window.renderAllBadges();
+          } catch(_){ }
         }
       }
       navItems.forEach(it => it.addEventListener('click', ()=> { 
